@@ -1,0 +1,50 @@
+# .pre-commit-config.yaml
+# ==============================================================================
+# DevSecOps Project 02: Local Quality Gate & Secret Scans
+# ==============================================================================
+repos:
+  # 1. Standard Code Quality & Hygiene Hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-yaml
+        name: Validate YAML Syntax
+      - id: check-json
+        name: Validate JSON Syntax
+      - id: check-merge-conflict
+        name: Intercept Unresolved Merge Conflicts
+      - id: end-of-file-fixer
+        name: Enforce Single Trailing Newline
+      - id: trailing-whitespace
+        name: Trim Trailing Whitespace
+
+  # 2. Secret Scanning - Gitleaks (Pattern & High Entropy Check)
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.2
+    hooks:
+      - id: gitleaks
+        name: Gitleaks Secret Scanner
+        description: Detect hardcoded API keys, passwords, and tokens using regex/entropy.
+        entry: gitleaks protect --verbose --redact --staged
+
+  # 3. Secret Scanning - Trufflehog (Active/Historical Credential Scan)
+  - repo: https://github.com/trufflesecurity/trufflehog
+    rev: v3.73.0
+    hooks:
+      - id: trufflehog
+        name: Trufflehog Credential Scanner
+        description: Verify high-fidelity credentials against known verification endpoints.
+        entry: trufflehog git file://. --baseline=.trufflehog-baseline --only-verified --fail
+        # Note: If running entirely locally on staged changes, use "trufflehog filesystem"
+        # entry: trufflehog filesystem --only-verified --fail .
+
+  # 4. Infrastructure-as-Code Quality Gates - Terraform
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.89.0
+    hooks:
+      - id: terraform_fmt
+        name: Terraform Format Lint (`terraform fmt`)
+      - id: terraform_tflint
+        name: Terraform Structural Linter (`tflint`)
+        args:
+          - '--args=--config=.tflint.hcl'
