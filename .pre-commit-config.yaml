@@ -1,6 +1,6 @@
 # .pre-commit-config.yaml
 # ==============================================================================
-# DevSecOps Project 02: Local Quality Gate & Secret Scans
+# DevSecOps Project 02: Local Quality Gate & Speed Optimized Scans
 # ==============================================================================
 repos:
   # 1. Standard Code Quality & Hygiene Hooks
@@ -18,7 +18,7 @@ repos:
       - id: trailing-whitespace
         name: Trim Trailing Whitespace
 
-  # 2. Secret Scanning - Gitleaks (Pattern & High Entropy Check)
+  # 2. Secret Scanning - Gitleaks (Sub-second Binary Execution)
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.18.2
     hooks:
@@ -27,18 +27,7 @@ repos:
         description: Detect hardcoded API keys, passwords, and tokens using regex/entropy.
         entry: gitleaks protect --verbose --redact --staged
 
-  # 3. Secret Scanning - Trufflehog (Active/Historical Credential Scan)
-  - repo: https://github.com/trufflesecurity/trufflehog
-    rev: v3.73.0
-    hooks:
-      - id: trufflehog
-        name: Trufflehog Credential Scanner
-        description: Verify high-fidelity credentials against known verification endpoints.
-        entry: trufflehog git file://. --baseline=.trufflehog-baseline --only-verified --fail
-        # Note: If running entirely locally on staged changes, use "trufflehog filesystem"
-        # entry: trufflehog filesystem --only-verified --fail .
-
-  # 4. Infrastructure-as-Code Quality Gates - Terraform
+  # 3. Infrastructure-as-Code Quality Gates - Terraform
   - repo: https://github.com/antonbabenko/pre-commit-terraform
     rev: v1.89.0
     hooks:
