@@ -13,3 +13,8 @@ target/
 mvnw
 mvnw.cmd
 .env
+# Local terraform state administration caches
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
