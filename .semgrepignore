@@ -1,0 +1,7 @@
+# Exclude infrastructure layers to let Checkov handle IaC sweeps exclusively
+terraform/
+.terraform/
+
+# Exclude compilation and dependency build targets
+target/
+.github/
