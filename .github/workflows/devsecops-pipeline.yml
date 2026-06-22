@@ -48,10 +48,12 @@ jobs:
         continue-on-error: false
 
       # 2. SAST: Semgrep Open-Source Static Code Analysis
-      - name: Run Semgrep Static Application Security Testing
+      - name: Run Semgrep Enterprise SAST Gate
         run: |
-          docker run --rm -v "${{ github.workspace }}:/src" returntocorp/semgrep semgrep ci \
-            --config=p/java --config=p/owasp-top-10 --soft-fail
+          docker run --rm -v "${{ github.workspace }}:/src" returntocorp/semgrep semgrep scan \
+            --config=p/java \
+            --config=p/owasp-top-10 \
+            --error # <-- Forces an exit code 1 ONLY on high-severity rule violations
 
       # 3. SCA: Trivy Filesystem Dependency Vulnerability Scan
       - name: Run Trivy Software Composition Analysis (SCA)
