@@ -1,3 +1,4 @@
+# .github/workflows/devsecops-pipeline.yml
 name: "DevSecOps Project 02: End-to-End Advanced Security Pipeline"
 
 on:
@@ -7,9 +8,9 @@ on:
       - "src/**"
       - "pom.xml"
       - "terraform/infra-network/**"
-      - ".github/workflows/**"  # Trigger if the pipeline itself is modified
-      - ".semgrepignore"         # Trigger if SAST ignore rules are updated
-      - ".zap/**"                # Trigger if DAST baseline rules change
+      - ".github/workflows/**"
+      - ".semgrepignore"
+      - ".zap/**"
   push:
     branches: [ "main" ]
     paths:
@@ -54,7 +55,19 @@ jobs:
             --config=p/java --config=p/owasp-top-ten
         continue-on-error: true
 
-      # 3. SCA: Trivy Filesystem Dependency Vulnerability Scan
+      # 3. COMPILATION & CACHE POPULATION LAYER
+      # Running this here ensures all Maven artifacts are cached on disk before Trivy runs.
+      - name: Initialize Java Enterprise Environment
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
+
+      - name: Execute Spring Boot Code Compilation & Cache Population
+        run: mvn clean package -DskipTests=true
+
+      # 4. SCA: Trivy Filesystem Dependency Scan (Now reads cleanly from local Maven cache)
       - name: Run Trivy Software Composition Analysis (SCA)
         uses: aquasecurity/trivy-action@master
         with:
@@ -64,17 +77,6 @@ jobs:
           vuln-type: 'library'
           severity: 'CRITICAL,HIGH'
           exit-code: '0'
-
-      # 4. COMPILATION LAYER (Cleanly Aligned Sequence)
-      - name: Initialize Java Enterprise Environment
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-          cache: 'maven'
-
-      - name: Execute Spring Boot Code Compilation
-        run: mvn clean package -DskipTests=true
 
       # 5. CONTAINER SCANNING: Build and Verify Local Docker Layer Compliance
       - name: Build Application Container Image
