@@ -1,5 +1,4 @@
-# .github/workflows/devsecops-pipeline.yml
-name: "DevSecOps Project 02: End-to-End Advanced Security Pipeline"
+name: "DevSecOps: Ephemeral Security Validation Engine"
 
 on:
   pull_request:
@@ -11,15 +10,7 @@ on:
       - ".github/workflows/**"
       - ".semgrepignore"
       - ".zap/**"
-  push:
-    branches: [ "main" ]
-    paths:
-      - "src/**"
-      - "pom.xml"
-      - "terraform/infra-network/**"
-      - ".github/workflows/**"
-      - ".semgrepignore"
-      - ".zap/**"
+      - "Dockerfile"
 
 permissions:
   id-token: write   # Mandatory for keyless AWS OIDC Federation
@@ -28,10 +19,9 @@ permissions:
 
 jobs:
   # ==============================================================================
-  # TRACK A: PULL REQUEST HARDENING (SAST, SCA, CONTAINER, EPHEMERAL STAGING DAST)
+  # THE SINGLE DEFINITIVE EPHEMERAL VALIDATION GATE
   # ==============================================================================
-  secure-validation-gate:
-    if: github.event_name == 'pull_request'
+  ephemeral-validation-gate:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
@@ -39,7 +29,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 1. SECRET SCANNING: Trufflehog Git History Audit
+      # 1. SECRET SCANNING: Deep commit history credential audits
       - name: Run Trufflehog Secret Scan
         uses: trufflesecurity/trufflehog@main
         with:
@@ -48,15 +38,14 @@ jobs:
           extra_args: --debug --only-verified
         continue-on-error: false
 
-      # 2. SAST: Semgrep Open-Source Static Code Analysis
+      # 2. SAST: Semgrep semantic analysis (Java standard + OWASP Top 10 rules)
       - name: Run Semgrep Static Application Security Testing
         run: |
           docker run --rm -v "${{ github.workspace }}:/src" returntocorp/semgrep semgrep scan \
             --config=p/java --config=p/owasp-top-ten
         continue-on-error: true
 
-      # 3. COMPILATION & CACHE POPULATION LAYER
-      # Running this here ensures all Maven artifacts are cached on disk before Trivy runs.
+      # 3. COMPILATION LAYER
       - name: Initialize Java Enterprise Environment
         uses: actions/setup-java@v4
         with:
@@ -64,10 +53,10 @@ jobs:
           java-version: '17'
           cache: 'maven'
 
-      - name: Execute Spring Boot Code Compilation & Cache Population
+      - name: Execute Spring Boot Code Compilation
         run: mvn clean package -DskipTests=true
 
-      # 4. SCA: Trivy Filesystem Dependency Scan (Now reads cleanly from local Maven cache)
+      # 4. SCA: Trivy file system dependency vulnerability scans
       - name: Run Trivy Software Composition Analysis (SCA)
         uses: aquasecurity/trivy-action@master
         with:
@@ -76,9 +65,9 @@ jobs:
           format: 'table'
           vuln-type: 'library'
           severity: 'CRITICAL,HIGH'
-          exit-code: '0'
+          exit-code: '1'
 
-      # 5. CONTAINER SCANNING: Build and Verify Local Docker Layer Compliance
+      # 5. CONTAINER SCANNING: Verify built Docker layer compliance
       - name: Build Application Container Image
         run: docker build -t devsecops-p02-app:${{ github.sha }} .
 
@@ -88,9 +77,9 @@ jobs:
           image-ref: 'devsecops-p02-app:${{ github.sha }}'
           format: 'table'
           severity: 'CRITICAL,HIGH'
-          exit-code: '0'
+          exit-code: '1'
 
-      # 6. INFRASTRUCTURE-AS-CODE (IaC) ASSESSMENT: Checkov Sweep
+      # 6. IaC ASSESSMENT: Checkov configuration scans
       - name: Run Checkov IaC Security Verification
         uses: bridgecrewio/checkov-action@master
         with:
@@ -106,61 +95,40 @@ jobs:
           aws-region: "eu-west-3"
           audience: "sts.amazonaws.com"
 
-      # 8. EPHEMERAL STAGING INFRASTRUCTURE DEPLOYMENT
+      # 8. EPHEMERAL INFRASTRUCTURE DEPLOYMENT
       - name: Initialize Terraform Runtime
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.15.6"
 
-      - name: Spin Up Identical Ephemeral Staging Mirror
+      - name: Spin Up Temporary Validation Environment
+        id: infra_deploy
         run: |
           cd terraform/infra-network
-          terraform init -reconfigure
+          terraform init -reconfigure -backend-config="key=ephemeral/terraform.tfstate"
           terraform apply -auto-approve -var="db_username=postgres"
 
-      # 9. DAST: Active OWASP ZAP Ingress Penetration Fuzzing
+          LIVE_ALB_DNS=$(terraform output -raw alb_dns_name)
+          echo "dynamic_url=http://$LIVE_ALB_DNS" >> $GITHUB_OUTPUT
+
+      # 9. DAST RESOLUTION PRE-REQUISITES
+      - name: Remediate Workspace Permissions for Non-Root Docker Runners
+        run: sudo chmod -R 777 ${{ github.workspace }}
+
+      # 10. DAST: Active OWASP ZAP penetration fuzzing against the ephemeral ALB URL
       - name: Execute Active OWASP ZAP Penetration Assessment
         uses: zaproxy/action-baseline@v0.12.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          target: "http://devsecops-p02-alb-1601639014.eu-west-3.elb.amazonaws.com"
+          target: ${{ steps.infra_deploy.outputs.dynamic_url }}
           rules_file_name: ".zap/rules.tsv"
           fail_action: false
           issue_title: "Security Regression Vulnerability Flagged by OWASP ZAP DAST"
 
-      # 10. CRITICAL DEVSECOPS SAFEGUARD: Guaranteed Cost-Free Infrastructure Teardown
+      # 11. AUTOMATED CLEANUP: Enforce destruction regardless of previous job outcomes
       - name: Enforce Ephemeral Infrastructure Destruction
         if: always()
         run: |
           cd terraform/infra-network
-          terraform init -reconfigure
+          terraform init -reconfigure -backend-config="key=ephemeral/terraform.tfstate"
           terraform destroy -auto-approve -var="db_username=postgres"
-
-  # ==============================================================================
-  # TRACK B: CONTINUOUS PRODUCTION STREAM (Triggers strictly upon successful merge)
-  # ==============================================================================
-  production-release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Source Code
-        uses: actions/checkout@v4
-
-      - name: Authenticate to AWS via Production OIDC Link
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: "arn:aws:iam::554000694003:role/devsecops-p02-github-actions-role"
-          aws-region: "eu-west-3"
-          audience: "sts.amazonaws.com"
-
-      - name: Setup Production Infrastructure Deployment
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.15.6"
-
-      - name: Update Persistent Production Environment
-        run: |
-          cd terraform/infra-network
-          terraform init -reconfigure
-          terraform plan -out=prod-release.tfplan
-          terraform apply -auto-approve prod-release.tfplan

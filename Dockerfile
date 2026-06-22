@@ -12,6 +12,11 @@ LABEL description="Headless E-Commerce REST API Engine"
 
 WORKDIR /app
 
+# ==============================================================================
+# VULNERABILITY REMEDIATION: Force-install latest security patches on container boot
+# ==============================================================================
+RUN apk update && apk upgrade --no-cache
+
 # Create a non-root user for security hardening
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 USER appuser
