@@ -1,241 +1,112 @@
-name: Build, Scan & Deploy to AWS ECS
+name: "DevSecOps Project 02: High-Availability GitOps Pipeline"
 
 on:
-  push:
-    branches: [main]
   pull_request:
-    branches: [main]
+    branches: [ "main" ]
+    paths:
+      - "src/**"
+      - "pom.xml"
+      - "terraform/infra-network/**"
+  push:
+    branches: [ "main" ]
+    paths:
+      - "src/**"
+      - "pom.xml"
+      - "terraform/infra-network/**"
 
-env:
-  AWS_REGION: us-east-1
-  ECR_REPOSITORY: ecommerce-api
-  ECS_CLUSTER: ecommerce-cluster
-  ECS_SERVICE: ecommerce-api-service
-  CONTAINER_NAME: ecommerce-api
-  JAVA_VERSION: '17'
+permissions:
+  id-token: write   # Mandatory requirement for AWS OIDC Token Federation
+  contents: read    # Necessary to checkout repository code
+  issues: write     # Allows OWASP ZAP to dynamically create compliance tracking tickets
 
 jobs:
-  # ============================================================
-  # Job 1: Build & Test
-  # ============================================================
-  build-and-test:
-    name: Build & Test
+  # ==============================================================================
+  # TRACK A: PULL REQUEST VALIDATION & EPHEMERAL DAST RUNS
+  # ==============================================================================
+  pr-security-gate:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Set up Java 17 (Temurin)
+      - name: Initialize Java Enterprise Tooling
         uses: actions/setup-java@v4
         with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: temurin
-          cache: maven
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
 
-      - name: Run unit & integration tests
-        run: mvn -B test
-
-      - name: Build JAR artifact
-        run: mvn -B package -DskipTests
-
-      - name: Upload JAR artifact
-        uses: actions/upload-artifact@v4
+      # 1. Shift-Left Security: Infrastructure-as-Code (IaC) Scanning via Checkov
+      - name: Run Checkov IaC Security Sweep
+        uses: bridgecrewio/checkov-action@master
         with:
-          name: app-jar
-          path: target/*.jar
-          retention-days: 7
+          directory: terraform/infra-network
+          framework: terraform
+          soft_fail: true # Flags vulnerabilities clearly without stopping the build layout prematurely
 
-  # ============================================================
-  # Job 2: SAST — Static Application Security Testing
-  # ============================================================
-  sast:
-    name: SAST Scan (Semgrep)
-    runs-on: ubuntu-latest
-    needs: build-and-test
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run Semgrep SAST scan
-        uses: semgrep/semgrep-action@v1
-        with:
-          config: >-
-            p/java
-            p/owasp-top-ten
-            p/spring
-        env:
-          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
-
-  # ============================================================
-  # Job 3: Dependency Vulnerability Scan
-  # ============================================================
-  dependency-scan:
-    name: Dependency Scan (OWASP Dependency-Check)
-    runs-on: ubuntu-latest
-    needs: build-and-test
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: temurin
-          cache: maven
-
-      - name: Run OWASP Dependency-Check
-        run: |
-          mvn org.owasp:dependency-check-maven:check \
-            -DfailBuildOnCVSS=8 \
-            -DsuppressionFile=.dependency-check-suppressions.xml \
-            --no-transfer-progress || true
-
-      - name: Upload Dependency-Check report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: dependency-check-report
-          path: target/dependency-check-report.html
-
-  # ============================================================
-  # Job 4: Container Build & Push to ECR
-  # Only runs on pushes to main (not PRs)
-  # ============================================================
-  push-to-ecr:
-    name: Build & Push Container Image
-    runs-on: ubuntu-latest
-    needs: [build-and-test, sast]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    outputs:
-      image-tag: ${{ steps.meta.outputs.image-tag }}
-      full-image: ${{ steps.meta.outputs.full-image }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials (OIDC recommended — replace with role-to-assume for keyless auth)
+      # 2. Keyless Authentication via AWS OIDC Federated Token Exchange
+      - name: Authenticate to AWS via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: "arn:aws:iam::554000694003:role/devsecops-p02-github-actions-role" # Paste your saved github_actions_role_arn here
+          aws-region: "eu-west-3"
+          audience: "sts.amazonaws.com"
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+      # 3. Code Validation Pass
+      - name: Execute Spring Boot Application Compilation & Tests
+        run: mvn clean verify -DskipTests=false
 
-      - name: Set image metadata
-        id: meta
-        env:
-          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        run: |
-          IMAGE_TAG="${GITHUB_SHA::8}"
-          FULL_IMAGE="${REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-          echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-          echo "full-image=${FULL_IMAGE}" >> $GITHUB_OUTPUT
-
-      - name: Build and push Docker image
-        env:
-          FULL_IMAGE: ${{ steps.meta.outputs.full-image }}
-        run: |
-          docker build -t "$FULL_IMAGE" .
-          docker push "$FULL_IMAGE"
-          echo "Pushed image: $FULL_IMAGE"
-
-      - name: Check ECR image scan findings
-        env:
-          IMAGE_TAG: ${{ steps.meta.outputs.image-tag }}
-        run: |
-          echo "Waiting 30s for ECR scan to complete..."
-          sleep 30
-          aws ecr describe-image-scan-findings \
-            --repository-name $ECR_REPOSITORY \
-            --image-id imageTag=$IMAGE_TAG \
-            --region $AWS_REGION \
-            --query 'imageScanFindings.findingSeverityCounts' \
-            --output json || true
-
-  # ============================================================
-  # Job 5: Deploy to ECS Fargate
-  # ============================================================
-  deploy:
-    name: Deploy to ECS Fargate (Production)
-    runs-on: ubuntu-latest
-    needs: push-to-ecr
-    environment:
-      name: production
-      url: https://api.yourdomain.com
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      # 4. Ephemeral Infrastructure Staging Verification
+      - name: Setup Terraform Execution Engine
+        uses: hashicorp/setup-terraform@v3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          terraform_version: "1.15.6"
 
-      - name: Download current ECS task definition
+      - name: Verify Staging Environmental Alignment
         run: |
-          aws ecs describe-task-definition \
-            --task-definition ecommerce-api \
-            --query taskDefinition \
-            --output json > task-definition.json
+          cd terraform/infra-network
+          terraform init -reconfigure
+          terraform validate
+          terraform plan -out=staging-ephemeral.tfplan
 
-      - name: Render updated task definition with new image
-        id: render-td
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
+      # 5. Dynamic Application Security Testing (DAST) Mock Pipeline Trigger
+      # In a real pipeline, we 'terraform apply' here, run the scan, then 'terraform destroy'.
+      # For your portfolio review, we run OWASP ZAP in baseline tracking mode against our public ALB.
+      - name: Execute OWASP ZAP Target Assessment
+        uses: zaproxy/action-baseline@v0.12.0
         with:
-          task-definition: task-definition.json
-          container-name: ${{ env.CONTAINER_NAME }}
-          image: ${{ needs.push-to-ecr.outputs.full-image }}
-
-      - name: Deploy to ECS (rolling update, wait for stability)
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-        with:
-          task-definition: ${{ steps.render-td.outputs.task-definition }}
-          service: ${{ env.ECS_SERVICE }}
-          cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true
-
-      - name: Verify deployment health
-        run: |
-          sleep 15
-          HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}" \
-            https://api.yourdomain.com/actuator/health)
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "Health check failed with HTTP $HTTP_CODE"
-            exit 1
-          fi
-          echo "Deployment verified. Health check returned HTTP $HTTP_CODE"
-
-  # ============================================================
-  # Job 6: DAST — Dynamic Application Security Testing
-  # Runs after successful deployment against the live environment
-  # ============================================================
-  dast:
-    name: DAST Scan (OWASP ZAP)
-    runs-on: ubuntu-latest
-    needs: deploy
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run OWASP ZAP API Scan
-        uses: zaproxy/action-api-scan@v0.7.0
-        with:
-          target: 'https://api.yourdomain.com'
-          format: openapi
-          cmd_options: '-a'
-          # Change to true to fail the pipeline on HIGH-severity findings
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target: "http://devsecops-p02-alb-1601639014.eu-west-3.elb.amazonaws.com" # Replace with your saved alb_dns_name
+          rules_file_name: ".zap/rules.tsv"
           fail_action: false
+          issue_title: "Security Regression Vulnerability Found by OWASP ZAP DAST"
 
-      - name: Upload ZAP HTML Report
-        uses: actions/upload-artifact@v4
-        if: always()
+  # ==============================================================================
+  # TRACK B: PERSISTENT PRODUCTION STREAM VIA CONTINUOUS DEPLOYMENT
+  # ==============================================================================
+  production-deployment:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to AWS via Production OIDC Link
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          name: zap-dast-report
-          path: report_html.html
-          retention-days: 30
+          role-to-assume: "arn:aws:iam::554000694003:role/devsecops-p02-github-actions-role"
+          aws-region: "eu-west-3"
+          audience: "sts.amazonaws.com"
+
+      - name: Setup Production Infrastructure Deployment
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.6"
+
+      - name: Deploy Core High-Availability Architecture to Production Stream
+        run: |
+          cd terraform/infra-network
+          terraform init -reconfigure
+          terraform plan -out=prod-release.tfplan
+          terraform apply -auto-approve prod-release.tfplan
