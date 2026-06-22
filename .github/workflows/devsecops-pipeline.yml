@@ -1,4 +1,3 @@
-# .github/workflows/devsecops-pipeline.yml
 name: "DevSecOps Project 02: End-to-End Advanced Security Pipeline"
 
 on:
@@ -8,12 +7,18 @@ on:
       - "src/**"
       - "pom.xml"
       - "terraform/infra-network/**"
+      - ".github/workflows/**"  # Trigger if the pipeline itself is modified
+      - ".semgrepignore"         # Trigger if SAST ignore rules are updated
+      - ".zap/**"                # Trigger if DAST baseline rules change
   push:
     branches: [ "main" ]
     paths:
       - "src/**"
       - "pom.xml"
       - "terraform/infra-network/**"
+      - ".github/workflows/**"
+      - ".semgrepignore"
+      - ".zap/**"
 
 permissions:
   id-token: write   # Mandatory for keyless AWS OIDC Federation
