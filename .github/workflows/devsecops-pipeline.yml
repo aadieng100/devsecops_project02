@@ -40,7 +40,7 @@ jobs:
 
       # 1. SECRET SCANNING: Trufflehog Git History Audit
       - name: Run Trufflehog Secret Scan
-        uses: trufflesecurity/trufflehog@main
+        uses: trufflesecurity/trufflehog@v3
         with:
           base: ${{ github.event.pull_request.base.sha }}
           head: ${{ github.event.pull_request.head.sha }}
@@ -50,14 +50,14 @@ jobs:
       # 2. SAST: Semgrep Open-Source Static Code Analysis
       - name: Run Semgrep Enterprise SAST Gate
         run: |
-          docker run --rm -v "${{ github.workspace }}:/src" returntocorp/semgrep semgrep scan \
+          docker run --rm -v "${{ github.workspace }}:/src" semgrep/semgrep semgrep scan \
             --config=p/java \
-            --config=p/owasp-top-10 \
+            --config=p/owasp-top-ten \
             --error # <-- Forces an exit code 1 ONLY on high-severity rule violations
 
       # 3. SCA: Trivy Filesystem Dependency Vulnerability Scan
       - name: Run Trivy Software Composition Analysis (SCA)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.31.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -82,7 +82,7 @@ jobs:
         run: docker build -t devsecops-p02-app:${{ github.sha }} .
 
       - name: Run Trivy Container Image Scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.31.0
         with:
           image-ref: 'devsecops-p02-app:${{ github.sha }}'
           format: 'table'
@@ -91,7 +91,7 @@ jobs:
 
       # 6. INFRASTRUCTURE-AS-CODE (IaC) ASSESSMENT: Checkov Sweep
       - name: Run Checkov IaC Security Verification
-        uses: bridgecrewio/checkov-action@master
+        uses: bridgecrewio/checkov-action@v12
         with:
           directory: terraform/infra-network
           framework: terraform
