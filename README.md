@@ -1,196 +1,290 @@
-# 🛒 Headless E-Commerce REST API Engine
+<div align="center">
 
-> Production-grade headless e-commerce backend built with **Spring Boot 3.3.4 · Java 17 · PostgreSQL**.
-> Designed from the ground up to support downstream **DevSecOps pipelines** — DAST scanning, API fuzzing, penetration testing, and automated security regression.
+# Hardened Headless E-Commerce REST API
+
+**Production-grade headless commerce backend engineered for automated DevSecOps pipelines**
+
+[![Java](https://img.shields.io/badge/Java-17-ED8B00?logo=openjdk&logoColor=white)](https://openjdk.org/projects/jdk/17/)
+[![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.5.x-6DB33F?logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![AWS](https://img.shields.io/badge/AWS-Multi--Tier-FF9900?logo=amazon-aws&logoColor=white)](https://aws.amazon.com/)
+[![Terraform](https://img.shields.io/badge/Terraform-IaC-7B42BC?logo=terraform&logoColor=white)](https://www.terraform.io/)
+[![OWASP ZAP](https://img.shields.io/badge/OWASP_ZAP-DAST-00549E?logo=owasp&logoColor=white)](https://www.zaproxy.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+</div>
 
 ---
 
 ## Table of Contents
 
-1. [Project Overview](#1-project-overview)
-2. [Architecture & Technology Stack](#2-architecture--technology-stack)
-3. [Project Structure](#3-project-structure)
-4. [Domain Data Model](#4-domain-data-model)
-5. [API Reference](#5-api-reference)
-   - [Users](#a-users--apiusers)
-   - [Products](#b-products--apiproducts)
-   - [Cart](#c-cart--apicarts)
-   - [Orders](#d-orders--apiorders)
-6. [Error Handling](#6-error-handling)
-7. [Data Seeding Framework](#7-data-seeding-framework)
-8. [Local Development](#8-local-development)
+- [Overview](#overview)
+- [DevSecOps Pipeline Architecture](#devsecops-pipeline-architecture)
+- [Two-Phase Ephemeral Infrastructure](#two-phase-ephemeral-infrastructure)
+- [Security Hardening](#security-hardening)
+- [Domain Data Model](#domain-data-model)
+- [API Reference](#api-reference)
+- [Project Structure](#project-structure)
+- [Local Development](#local-development)
 
 ---
 
-## 1. Project Overview
+## Overview
 
-This service is a **fully headless REST API** — it produces pure JSON and has no server-side rendering. It can be consumed by any frontend (React, mobile, CLI) or automated tooling.
+This project is a **REST API backend for a headless e-commerce platform**, designed as a full DevSecOps reference implementation. Security is treated as a first-class citizen — not a post-deployment afterthought.
 
-| Attribute | Value |
+Every pull request into `main` triggers a fully automated **5-job security validation pipeline** that runs secret scanning, SAST analysis, infrastructure compliance checks, SCA/container hardening, and active DAST fuzzing against an ephemeral multi-tier AWS environment — all before a single line of code can be merged.
+
+### Tech Stack
+
+| Layer | Technology |
 |---|---|
-| Framework | Spring Boot 3.3.4 |
-| Java Version | 17 (LTS) |
-| Build Tool | Maven 3.x |
-| Database | PostgreSQL 16 |
-| Connection Pool | HikariCP (20 max connections) |
-| Container Base | `eclipse-temurin:17-jre-alpine` |
-| Exposed Port | `8080` |
-| Health Endpoint | `GET /actuator/health` |
+| **Runtime** | Java 17 (Eclipse Temurin), Spring Boot 3.5.x |
+| **Database** | AWS RDS PostgreSQL 16, HikariCP connection pool |
+| **Infrastructure** | AWS VPC · ALB · EC2 Auto Scaling Group · RDS |
+| **IaC** | Terraform (modular, remote S3 backend state) |
+| **CI/CD** | GitHub Actions (DAG multi-job pipeline) |
+| **Security Tools** | Trufflehog · Semgrep · Checkov · Trivy · OWASP ZAP |
+| **Container** | Docker (eclipse-temurin:17-jre-alpine base) |
+| **Auth** | AWS OIDC Keyless Federation (no static credentials) |
 
 ---
 
-## 2. Architecture & Technology Stack
+## DevSecOps Pipeline Architecture
+
+Pull requests trigger a fully parallelized **Directed Acyclic Graph (DAG)** workflow in GitHub Actions. Uncoupled static checks run in parallel; rigid compliance gates block cloud provisioning until all upstream jobs pass.
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│                        REST Clients                         │
-│          (Browser / Mobile / DAST Scanner / curl)           │
-└──────────────────────────┬─────────────────────────────────┘
-                           │ HTTP JSON
-┌──────────────────────────▼─────────────────────────────────┐
-│                  Spring Boot REST Layer                      │
-│   UserController  ProductController  CartController         │
-│                          OrderController                     │
-│   @Valid DTO Validation · X-User-Id Header Context          │
-├────────────────────────────────────────────────────────────┤
-│                    Service Layer                             │
-│  UserServiceImpl  ProductServiceImpl  CartServiceImpl       │
-│                   OrderServiceImpl                           │
-│  @Transactional boundaries · Business rule enforcement      │
-├────────────────────────────────────────────────────────────┤
-│                  Repository Layer                            │
-│  Spring Data JPA · JPQL JOIN FETCH queries (N+1 safe)      │
-├────────────────────────────────────────────────────────────┤
-│             PostgreSQL 16 (HikariCP pool)                   │
-└────────────────────────────────────────────────────────────┘
+[ git push → pull_request on main ]
+               │
+               ▼
+ ┌─────────────────────────────────┐
+ │  JOB 1 — Static Security Scans │  ← Runs parallel to nothing; blocks all downstream
+ │                                 │
+ │  ● Trufflehog  (Secret Scan)    │
+ │  ● Semgrep     (SAST / OWASP)   │
+ │  ● Checkov     (IaC Compliance) │
+ └───────────────┬─────────────────┘
+                 │ needs: static-security-scans
+                 ▼
+ ┌─────────────────────────────────┐
+ │  JOB 2 — Build & Verify         │
+ │                                 │
+ │  ● Maven compile + package      │
+ │  ● Trivy FS   (SCA scan)        │
+ │  ● Docker build                 │
+ │  ● Trivy Image (container scan) │
+ └───────────────┬─────────────────┘
+                 │ needs: build-and-verify
+                 ▼
+ ┌─────────────────────────────────┐
+ │  JOB 3 — Ephemeral AWS Deploy   │
+ │                                 │
+ │  ● Two-phase S3 staging         │
+ │  ● VPC · ALB · ASG · RDS map   │
+ └───────────────┬─────────────────┘
+                 │ needs: ephemeral-deploy
+                 ▼
+ ┌─────────────────────────────────┐
+ │  JOB 4 — Active DAST            │
+ │                                 │
+ │  ● ALB health-check polling     │
+ │  ● OWASP ZAP baseline scan      │
+ └──────────┬─────────────┬────────┘
+            │ if: always()│ needs: ephemeral-deploy + dast
+            ▼             ▼
+ ┌───────────────┐  ┌─────────────────────────────┐
+ │  JOB 5        │  │  JOB 6 — Branch Gate        │
+ │  Teardown     │  │                             │
+ │  (guaranteed) │  │  ● Atomic compliance status │
+ └───────────────┘  └─────────────────────────────┘
 ```
 
-**Key Libraries:**
+### Security Gates in Detail
 
-| Dependency | Purpose |
-|---|---|
-| `spring-boot-starter-web` | REST API, Jackson JSON serialisation |
-| `spring-boot-starter-data-jpa` | ORM, repository abstraction |
-| `spring-boot-starter-validation` | Jakarta Bean Validation (`@Valid`, `@NotBlank`, etc.) |
-| `spring-boot-starter-actuator` | `/actuator/health`, `/actuator/metrics` |
-| `postgresql` | JDBC driver |
-| `lombok` | Boilerplate reduction (`@Builder`, `@Slf4j`, `@RequiredArgsConstructor`) |
-| `h2` (test scope) | In-memory DB for context smoke tests |
+#### Job 1 — Static Security Scans
+
+| Tool | Purpose | Failure Behavior |
+|---|---|---|
+| **Trufflehog** | Scans full git commit history for verified secrets (API keys, tokens, passwords) | Hard fail — blocks pipeline |
+| **Semgrep** | SAST against `p/java` + `p/owasp-top-ten` rulesets | Hard fail — blocks pipeline |
+| **Checkov** | Terraform IaC compliance (IMDSv2, S3 encryption, security group lockdown) | Hard fail with curated `skip_check` profile for ephemeral sandbox constraints |
+
+#### Job 2 — Compilation & Supply Chain Vetting
+
+| Tool | Purpose | Failure Behavior |
+|---|---|---|
+| **Maven** | Compiles with pinned `tomcat.version: 10.1.55` and `postgresql.version: 42.7.11` to block transitive RCE vulnerabilities | Hard fail |
+| **Trivy FS** | SCA scan of all file system dependencies — zero tolerance for `CRITICAL`/`HIGH` CVEs | Hard fail |
+| **Trivy Image** | Container layer analysis on `eclipse-temurin:17-jre-alpine` | Hard fail |
+
+#### Job 6 — Branch Protection Gate
+
+An umbrella job (`secure-validation-gate`) aggregates the outcome of all upstream jobs into a single atomic status check that GitHub's branch protection rules evaluate before allowing a merge to `main`.
 
 ---
 
-## 3. Project Structure
+## Two-Phase Ephemeral Infrastructure
+
+The pipeline solves a non-trivial distribution problem: GitHub Actions runner nodes are ephemeral VMs with no network path into the private AWS subnets where compute lives. The **Two-Phase Staging Bucket Pattern** bridges this gap cleanly.
+
+### Phase 1 — Storage Provisioning
+
+Terraform targets only the S3 deployment bucket (`aws_s3_bucket.app_deploy`):
+- Server-side encryption enabled (AES-256)
+- Public access blocked
+- 24-hour lifecycle expiry rule (ephemeral data hygiene)
+
+The runner then streams three artifacts into the bucket:
+- `app.jar` — the pre-vetted, pre-compiled Spring Boot binary
+- `Dockerfile` — a staging-optimized image built **from the JAR**, not from source
+- `docker-compose.yml` — the container orchestration spec
+
+> **Why a separate Dockerfile?** The development `Dockerfile` rebuilds from `src/` and `pom.xml`, which don't exist on the EC2 host. The staging variant uses `COPY app.jar` directly, keeping the image minimal and reproducible.
+
+### Phase 2 — Compute Bootstrapping
+
+Terraform applies the full network topology:
 
 ```
-devsecops_project02/
-├── Dockerfile                                  # Multi-stage build, non-root runtime user
-├── docker-compose.yml                          # Local dev: PostgreSQL 16 + API
-├── pom.xml                                     # Spring Boot 3.3.4 Maven project
-└── src/
-    ├── main/
-    │   ├── java/com/ecommerce/api/
-    │   │   ├── EcommerceApplication.java       # Entry point
-    │   │   │
-    │   │   ├── model/                          # JPA Entities & Enums
-    │   │   │   ├── User.java
-    │   │   │   ├── Product.java
-    │   │   │   ├── Cart.java
-    │   │   │   ├── CartItem.java
-    │   │   │   ├── Order.java
-    │   │   │   ├── OrderItem.java
-    │   │   │   └── OrderStatus.java            # Enum: PENDING | PAID | SHIPPED
-    │   │   │
-    │   │   ├── repository/                     # Spring Data JPA Interfaces
-    │   │   │   ├── UserRepository.java
-    │   │   │   ├── ProductRepository.java      # JPQL: category filter + keyword search
-    │   │   │   ├── CartRepository.java         # JOIN FETCH cart + items + products
-    │   │   │   ├── CartItemRepository.java
-    │   │   │   └── OrderRepository.java        # JOIN FETCH orders + items + products
-    │   │   │
-    │   │   ├── service/                        # Service interfaces
-    │   │   │   ├── UserService.java
-    │   │   │   ├── ProductService.java
-    │   │   │   ├── CartService.java
-    │   │   │   ├── OrderService.java
-    │   │   │   └── impl/                       # Implementations
-    │   │   │       ├── UserServiceImpl.java
-    │   │   │       ├── ProductServiceImpl.java
-    │   │   │       ├── CartServiceImpl.java    # Lazy cart creation, stock guard
-    │   │   │       └── OrderServiceImpl.java   # 2-phase atomic checkout
-    │   │   │
-    │   │   ├── controller/                     # REST Controllers (14 endpoints)
-    │   │   │   ├── UserController.java
-    │   │   │   ├── ProductController.java
-    │   │   │   ├── CartController.java
-    │   │   │   ├── OrderController.java
-    │   │   │   └── dto/                        # Request/Response DTOs
-    │   │   │       ├── ProductRequest.java
-    │   │   │       ├── AddToCartRequest.java
-    │   │   │       ├── UserRequest.java
-    │   │   │       ├── CartResponse.java       # Computed subtotals + cart total
-    │   │   │       └── UpdateOrderStatusRequest.java
-    │   │   │
-    │   │   ├── exception/                      # Global error handling
-    │   │   │   ├── GlobalExceptionHandler.java # @RestControllerAdvice
-    │   │   │   ├── ResourceNotFoundException.java
-    │   │   │   ├── InsufficientStockException.java
-    │   │   │   └── BadRequestException.java
-    │   │   │
-    │   │   └── config/
-    │   │       ├── DataSeeder.java             # 56 products, 5 users, 5 orders on boot
-    │   │       └── WebMvcConfig.java           # CORS configuration
-    │   │
-    │   └── resources/
-    │       └── application.properties          # Env-var driven, HikariCP tuned
-    │
-    └── test/
-        └── java/com/ecommerce/api/
-            └── EcommerceApplicationTests.java  # H2 context smoke test
+Internet
+   │
+   ▼
+AWS ALB (Public Subnets, HTTP:80)
+   │
+   ▼
+EC2 Auto Scaling Group (Private Subnets)
+   │ user_data bootstrap script:
+   │  1. Pull app.jar + Dockerfile from S3
+   │  2. Resolve RDS endpoint via IAM metadata
+   │  3. Write /app/.env with live credentials
+   │  4. docker compose up
+   │
+   ▼
+AWS RDS PostgreSQL 16 (Isolated Subnet Group)
+```
+
+The `user_data` bootstrap script uses the EC2 instance's IAM profile to fetch runtime credentials from Secrets Manager and write a local `.env` file dynamically — no static credentials in source control, ever.
+
+> **Why decouple the database?** Running PostgreSQL alongside the Java application inside a `t3.micro` (1 GB RAM) instance triggers the Linux OOM killer. Routing connections to managed RDS keeps the compute layer stateless and horizontally scalable.
+
+---
+
+## Security Hardening
+
+All security measures are implemented in code — no manual server configuration required.
+
+### 1. HTTP Security Headers — `SecurityHeadersFilter`
+
+A global `jakarta.servlet.Filter` (priority `@Order(1)`) intercepts every outbound HTTP response — regardless of controller, path, or status code — and injects the following headers:
+
+| Header | Value | Fixes |
+|---|---|---|
+| `X-Content-Type-Options` | `nosniff` | ZAP [10021] — MIME sniffing attacks |
+| `Cross-Origin-Resource-Policy` | `same-origin` | ZAP [90004] — Cross-origin resource leakage |
+| `Cache-Control` | `no-store` | ZAP [10049] — Sensitive response caching |
+| `X-Frame-Options` | `DENY` | Clickjacking / UI redressing |
+| `X-XSS-Protection` | `0` | Disables legacy broken browser XSS filter (OWASP recommendation) |
+
+### 2. Information Disclosure Controls — `BaseUtilityController`
+
+Unmapped administrative paths that would otherwise trigger Spring Boot's default 500 error page (leaking framework details) are explicitly intercepted and return sanitized JSON responses:
+
+| Path | Behavior | HTTP Status |
+|---|---|---|
+| `/actuator/` | `{"error": "Not Found"}` — path existence is not confirmed | **404** |
+| `/api/v1/admin/` | `{"error": "Forbidden"}` — structured, non-disclosive | **403** |
+
+### 3. Error Payload Sanitization — `application.properties`
+
+Framework error signatures are stripped from all client-facing responses:
+
+```properties
+# Disable Spring Boot white-label error page
+server.error.whitelabel.enabled=false
+
+# Strip all framework debug information from error responses
+server.error.include-message=never
+server.error.include-binding-errors=never
+server.error.include-stacktrace=never
+server.error.include-exception=false
+```
+
+### 4. Structured Exception Handling — `GlobalExceptionHandler`
+
+A `@RestControllerAdvice` handler produces consistent, OWASP-compliant error payloads for all exception types without leaking stack traces or internal class names:
+
+```json
+{
+  "timestamp": "2026-06-23T14:00:00Z",
+  "status": 404,
+  "error": "Not Found",
+  "message": "Product with id 42 was not found.",
+  "path": "/api/products/42"
+}
+```
+
+### 5. OWASP ZAP DAST Scan Results
+
+Active DAST scan results after hardening (production target):
+
+```
+PASS: Loosely Scoped Cookie          [90033]
+PASS: X-Content-Type-Options         [10021]  ← Fixed by SecurityHeadersFilter
+PASS: Information Disclosure         [10023]  ← Fixed by explicit endpoint handlers
+PASS: Cross-Origin-Resource-Policy   [90004]  ← Fixed by SecurityHeadersFilter
+PASS: Application Error Disclosure   [90022]  ← Fixed by explicit endpoint handlers
+IGNORE: Non-Storable Content         [10049]  ← HTTP 500/204 are non-cacheable by spec
+
+FAIL-NEW: 0  WARN-NEW: 0  PASS: 62+
 ```
 
 ---
 
-## 4. Domain Data Model
+## Domain Data Model
 
 ```
-┌──────────┐       1:1       ┌──────────┐      1:N     ┌────────────┐
-│   User   ├────────────────►│   Cart   ├─────────────►│  CartItem  │
-│  id      │                 │  id      │               │  id        │
-│  username│                 │  user_id │               │  cart_id   │
-│  email   │                 └──────────┘               │  product_id│
-│createdAt │                                            │  quantity  │
+┌──────────┐      1:1       ┌──────────┐      1:N      ┌────────────┐
+│   User   ├───────────────►│   Cart   ├──────────────►│  CartItem  │
+│          │                │          │                │            │
+│ id       │                │ id       │                │ id         │
+│ username │                │ user_id  │                │ cart_id    │
+│ email    │                └──────────┘                │ product_id │
+│createdAt │                                            │ quantity   │
 └──────────┘                                            └─────┬──────┘
      │                                                        │
      │ 1:N                                                    │ N:1
-     │                                                        ▼
-┌────▼──────┐      1:N     ┌───────────┐     N:1    ┌──────────────┐
-│   Order   ├─────────────►│ OrderItem │────────────►│   Product   │
-│  id       │              │  id       │              │  id         │
-│  user_id  │              │  order_id │              │  name       │
-│  status   │              │  product_id              │  description│
-│totalAmount│              │  quantity │              │  price      │
-│ createdAt │              │priceAtPurch              │  category   │
-└───────────┘              └───────────┘              │stockQuantity│
-                                                      │  createdAt  │
-                                                      └─────────────┘
+     ▼                                                        ▼
+┌───────────┐      1:N      ┌───────────┐      N:1     ┌─────────────┐
+│   Order   ├──────────────►│ OrderItem ├─────────────►│   Product   │
+│           │               │           │               │             │
+│ id        │               │ id        │               │ id          │
+│ user_id   │               │ order_id  │               │ name        │
+│ status    │               │ product_id│               │ description │
+│totalAmount│               │ quantity  │               │ price       │
+│ createdAt │               │priceAtPurchase            │ category    │
+└───────────┘               └───────────┘               │stockQuantity│
+                                                        │ createdAt   │
+                                                        └─────────────┘
 ```
 
-**Entity Design Decisions:**
-- `CartItem` has a unique constraint on `(cart_id, product_id)` — duplicate adds increment quantity.
-- `OrderItem.priceAtPurchase` snapshots the price at checkout time — price changes don't affect order history.
-- `Order.@PrePersist` null-guards `createdAt` so the DataSeeder can inject historical timestamps.
-- All lazy-loaded associations use `JOIN FETCH` in repository queries to avoid N+1 queries.
+**Design decisions:**
+
+- `CartItem` enforces a unique constraint on `(cart_id, product_id)` — duplicate `POST` calls increment quantity rather than creating duplicate rows.
+- `OrderItem.priceAtPurchase` snapshots the price at checkout time — product price changes never retroactively affect historical order data.
+- `Order.@PrePersist` null-guards `createdAt` to allow the `DataSeeder` to inject realistic historical timestamps for demo data.
+- All lazy-loaded associations use `JOIN FETCH` in repository queries to eliminate N+1 query patterns.
 
 ---
 
-## 5. API Reference
+## API Reference
 
-All endpoints return `application/json`. Error responses follow the [standard envelope](#6-error-handling).
+All endpoints return `application/json`. Endpoints that operate on cart and order data require an `X-User-Id` header.
 
-### A. Users — `/api/users`
+### Users — `/api/users`
 
-#### `GET /api/users/{id}`
-Fetch user profile by ID.
+<details>
+<summary><code>GET /api/users/{id}</code> — Retrieve a user profile</summary>
 
 ```bash
 curl http://localhost:8080/api/users/1
@@ -204,304 +298,178 @@ curl http://localhost:8080/api/users/1
   "createdAt": "2026-06-16T17:00:00"
 }
 ```
+</details>
 
-#### `POST /api/users`
-Provision a new user account.
+<details>
+<summary><code>POST /api/users</code> — Create a new user account</summary>
 
 ```bash
 curl -X POST http://localhost:8080/api/users \
   -H "Content-Type: application/json" \
   -d '{ "username": "newuser", "email": "new@example.com" }'
 ```
-
-**Request Body Constraints:**
-
-| Field | Rules |
-|---|---|
-| `username` | Not blank, 3–64 chars |
-| `email` | Valid RFC email, max 256 chars |
+</details>
 
 ---
 
-### B. Products — `/api/products`
+### Products — `/api/products`
 
-#### `GET /api/products`
-List all products. Supports optional filtering:
+<details>
+<summary><code>GET /api/products</code> — List all products with optional filters</summary>
 
-| Parameter | Type | Behavior |
-|---|---|---|
-| `category` | string | Exact match (case-sensitive) |
-| `search` | string | Case-insensitive substring search on `name` and `description` |
+Supports `?category=` (exact match) and `?search=` (case-insensitive substring).
 
 ```bash
-# All products
-curl http://localhost:8080/api/products
-
-# By category
-curl "http://localhost:8080/api/products?category=Electronics"
-
-# Keyword search
-curl "http://localhost:8080/api/products?search=wireless"
-
-# Combined
 curl "http://localhost:8080/api/products?category=Fitness&search=yoga"
 ```
+</details>
 
-#### `GET /api/products/{id}`
-Fetch single product. Returns `404` if not found.
+<details>
+<summary><code>POST /api/products</code> — Create a new product</summary>
 
-#### `POST /api/products`
-Create a product. All fields are validated.
+Validates: price ≥ 0.01, non-blank name, stock quantity ≥ 0.
 
 ```bash
 curl -X POST http://localhost:8080/api/products \
   -H "Content-Type: application/json" \
-  -d '{
-    "name": "USB-C Hub 7-in-1",
-    "description": "Compact aluminium hub with HDMI 4K, 3x USB-A, SD card reader, and 100W PD passthrough.",
-    "price": 49.99,
-    "category": "Electronics",
-    "stockQuantity": 150
-  }'
+  -d '{ "name": "Yoga Mat Pro", "price": 49.99, "category": "Fitness", "stockQuantity": 100 }'
 ```
-
-**Request Body Constraints:**
-
-| Field | Rules |
-|---|---|
-| `name` | Not blank, 2–256 chars |
-| `description` | Not blank, 10–5000 chars |
-| `price` | ≥ 0.01, max 10 integer digits, 2 decimal places |
-| `category` | Not blank, max 128 chars |
-| `stockQuantity` | ≥ 0 |
-
-#### `PUT /api/products/{id}`
-Full replacement update. Same validation as POST.
-
-#### `DELETE /api/products/{id}`
-Delete product. Returns `204 No Content`.
+</details>
 
 ---
 
-### C. Cart — `/api/carts`
+### Cart — `/api/carts`
 
-> All cart endpoints require the `X-User-Id` header identifying the acting user.
-> A cart is created lazily on first access.
+Requires `X-User-Id: {userId}` header on all requests.
 
-#### `GET /api/carts`
-Return the active cart with computed subtotals and total.
+<details>
+<summary><code>GET /api/carts</code> — Retrieve the active cart with computed totals</summary>
 
 ```bash
 curl http://localhost:8080/api/carts -H "X-User-Id: 1"
 ```
+</details>
 
-```json
-{
-  "cartId": 7,
-  "userId": 1,
-  "items": [
-    {
-      "cartItemId": 12,
-      "productId": 3,
-      "productName": "Samsung 65\" Neo QLED 8K Smart TV",
-      "unitPrice": 1499.00,
-      "quantity": 1,
-      "subtotal": 1499.00
-    }
-  ],
-  "cartTotal": 1499.00
-}
-```
+<details>
+<summary><code>POST /api/carts/items</code> — Add an item to the cart</summary>
 
-#### `POST /api/carts/items`
-Add an item to the cart. If the product already exists in the cart, the quantity is **incremented** (not replaced). Validates against available stock.
+Validates stock availability in real time. Duplicate product adds increment quantity.
 
 ```bash
 curl -X POST http://localhost:8080/api/carts/items \
   -H "X-User-Id: 1" \
   -H "Content-Type: application/json" \
-  -d '{ "productId": 3, "quantity": 1 }'
+  -d '{ "productId": 3, "quantity": 2 }'
 ```
+</details>
 
-#### `DELETE /api/carts/items/{productId}`
-Completely remove a product line from the cart.
+---
+
+### Orders — `/api/orders`
+
+<details>
+<summary><code>POST /api/orders/checkout</code> — Atomic checkout transaction</summary>
+
+Executes inside a single `@Transactional` boundary:
+1. Validates stock levels for every cart item
+2. Decrements inventory counters atomically
+3. Snapshots `priceAtPurchase` for each line item
+4. Creates the `Order` record with status `PENDING`
+5. Clears the user's cart
 
 ```bash
-curl -X DELETE http://localhost:8080/api/carts/items/3 -H "X-User-Id: 1"
+curl -X POST http://localhost:8080/api/orders/checkout \
+  -H "X-User-Id: 1"
 ```
+</details>
 
-#### `DELETE /api/carts/clear`
-Remove all items from the active cart.
+---
 
-```bash
-curl -X DELETE http://localhost:8080/api/carts/clear -H "X-User-Id: 1"
+## Project Structure
+
+```
+devsecops_project02/
+│
+├── .github/workflows/
+│   └── devsecops-pipeline.yml       # 6-job parallel DAG CI/CD pipeline
+│
+├── .zap/
+│   └── rules.tsv                    # OWASP ZAP custom rule overrides
+│
+├── terraform/infra-network/         # Full AWS multi-tier IaC footprint
+│   ├── vpc.tf                       # VPC, subnets, IGW, NAT Gateway
+│   ├── alb.tf                       # Application Load Balancer
+│   ├── asg.tf                       # Auto Scaling Group + Launch Template
+│   ├── rds.tf                       # RDS PostgreSQL 16 cluster
+│   └── providers.tf                 # AWS provider + S3 backend config
+│
+├── Dockerfile                       # Multi-stage container build (local)
+├── docker-compose.yml               # Local development stack
+├── pom.xml                          # Dependency management with version pins
+│
+└── src/main/
+    ├── java/com/ecommerce/api/
+    │   ├── config/
+    │   │   ├── SecurityHeadersFilter.java   # Global HTTP security header injector
+    │   │   └── DataSeeder.java              # Idempotent demo data seeder
+    │   │
+    │   ├── controller/
+    │   │   ├── BaseUtilityController.java   # Root, robots.txt, sitemap, safe fallbacks
+    │   │   ├── UserController.java
+    │   │   ├── ProductController.java
+    │   │   ├── CartController.java
+    │   │   └── OrderController.java
+    │   │
+    │   ├── exception/
+    │   │   └── GlobalExceptionHandler.java  # Unified OWASP-compliant error responses
+    │   │
+    │   ├── model/                           # JPA entities (User, Product, Cart, Order…)
+    │   ├── repository/                      # Spring Data JPA repositories
+    │   └── service/                         # Business logic layer
+    │
+    └── resources/
+        └── application.properties           # Hardened production configuration
 ```
 
 ---
 
-### D. Orders — `/api/orders`
-
-> All order endpoints require the `X-User-Id` header.
-
-#### `POST /api/orders/checkout`
-Execute the full atomic checkout transaction.
-
-**Business logic (all within one `@Transactional` boundary):**
-1. Fetch the active cart — error if empty.
-2. **Validation pass:** verify every product has sufficient stock. Fail fast before any mutation.
-3. **Deduction pass:** decrement `Product.stockQuantity` for each line item.
-4. Snapshot `priceAtPurchase` for each `OrderItem`.
-5. Persist the `Order` with status `PENDING`.
-6. Clear the user's cart.
-
-```bash
-curl -X POST http://localhost:8080/api/orders/checkout -H "X-User-Id: 1"
-```
-
-**Returns:** Full `Order` object with `OrderItem` list, `201 Created`.
-
-#### `GET /api/orders`
-Retrieve all historical orders for the user, newest first.
-
-```bash
-curl http://localhost:8080/api/orders -H "X-User-Id: 1"
-```
-
-#### `PATCH /api/orders/{id}/status`
-Update the status of an existing order.
-
-```bash
-curl -X PATCH http://localhost:8080/api/orders/2/status \
-  -H "Content-Type: application/json" \
-  -d '{ "status": "PAID" }'
-```
-
-Valid statuses: `PENDING`, `PAID`, `SHIPPED`
-
----
-
-## 6. Error Handling
-
-Every error response conforms to a canonical JSON envelope:
-
-```json
-{
-  "timestamp": "2026-06-16T17:15:00.123Z",
-  "status": 409,
-  "error": "Conflict",
-  "message": "Insufficient stock for product 'Sony WH-1000XM5' (id=1): requested 200 but only 120 available.",
-  "productId": 1,
-  "requested": 200,
-  "available": 120,
-  "path": "/api/carts/items"
-}
-```
-
-| Exception | HTTP Status | Triggered By |
-|---|---|---|
-| `ResourceNotFoundException` | `404 Not Found` | Missing user/product/cart/order |
-| `InsufficientStockException` | `409 Conflict` | Add-to-cart or checkout over stock |
-| `BadRequestException` | `400 Bad Request` | Business rule violation (e.g., empty cart checkout, duplicate username) |
-| `MethodArgumentNotValidException` | `400 Bad Request` | Jakarta `@Valid` field failures — returns `fieldErrors` map |
-| `MissingRequestHeaderException` | `400 Bad Request` | Missing `X-User-Id` header |
-| `MethodArgumentTypeMismatchException` | `400 Bad Request` | Wrong type in path variable |
-| `Exception` (fallback) | `500 Internal Server Error` | Unexpected failures |
-
----
-
-## 7. Data Seeding Framework
-
-The `DataSeeder` `CommandLineRunner` boots the application with realistic test data on every fresh database. It is **fully idempotent** — it checks `userRepository.count() > 0` before doing any work, making container restarts safe.
-
-**Seed Dataset:**
-
-| Category | Count | Price Range |
-|---|---|---|
-| Electronics | 11 products | $99.99 – $2,499.00 |
-| Apparel | 11 products | $24.95 – $349.00 |
-| Home & Kitchen | 11 products | $39.90 – $799.99 |
-| Books | 12 products | $27.99 – $79.99 |
-| Fitness | 11 products | $44.95 – $2,495.00 |
-| **Total** | **56 products** | **$24.95 – $2,495.00** |
-
-**Seeded Users:**
-
-| ID | Username | Email |
-|---|---|---|
-| 1 | `alice_dev` | alice.devlin@techcorp.io |
-| 2 | `bob_qatester` | bob.qa@devops-lab.com |
-| 3 | `carol_infosec` | carol.sec@securenet.org |
-| 4 | `dave_sre` | dave.sre@cloudops.net |
-| 5 | `eve_dast` | eve.dast@pentest.tools |
-
-**Historical Orders:**
-
-| # | User | Items | Status |
-|---|---|---|---|
-| 1 | alice_dev | Sony Headphones + Logitech Mouse | `SHIPPED` |
-| 2 | bob_qatester | 3 technical books | `PAID` |
-| 3 | carol_infosec | Yoga Mat x2 + Hydro Flask x3 | `SHIPPED` |
-| 4 | dave_sre | Instant Pot + Nespresso + Cast Iron Skillet | `PENDING` |
-| 5 | eve_dast | Levi's Jeans + Nike AF1 + Anker Power Bank | `PAID` |
-
----
-
-## 8. Local Development
+## Local Development
 
 ### Prerequisites
 
-- Java 17 (`/usr/local/Cellar/openjdk@17/...` on macOS)
-- Maven 3.9+
-- Docker & Docker Compose
+| Requirement | Minimum Version |
+|---|---|
+| JDK | 17 (Eclipse Temurin recommended) |
+| Maven | 3.9+ |
+| Docker Engine | 24+ with Compose Plugin |
 
-> ⚠️ **macOS Note:** If your system Maven defaults to Java 24 (check with `mvn --version`), prefix all Maven commands with the `JAVA_HOME` override shown below.
-
-### Option A — Docker Compose (Recommended)
+### Start the Full Stack
 
 ```bash
-# Start PostgreSQL + API
-docker compose up -d
+# Start PostgreSQL 16 + Spring Boot API in isolated containers
+docker compose up -d --build
 
-# Tail logs
+# Stream live application logs
 docker compose logs -f api
 
-# Stop all services
+# Stop and remove containers
 docker compose down
-
-# Full teardown including volume (resets DB)
-docker compose down -v
 ```
 
-API is available at: `http://localhost:8080`
-
-### Option B — Local PostgreSQL + Maven
+### Run Tests & Build
 
 ```bash
-export JAVA_HOME=/usr/local/Cellar/openjdk@17/17.0.16/libexec/openjdk.jdk/Contents/Home
+# Run the full test suite
+mvn test
 
-# Create database (first time)
-createdb -U postgres ecommerce_db
-
-# Run the application
-JAVA_HOME=$JAVA_HOME mvn spring-boot:run \
-  -Dspring-boot.run.jvmArguments="\
-    -DDB_URL=jdbc:postgresql://localhost:5432/ecommerce_db \
-    -DDB_USERNAME=postgres \
-    -DDB_PASSWORD=yourpassword"
-```
-
-### Building the JAR
-
-```bash
-JAVA_HOME=$JAVA_HOME mvn -B clean package -DskipTests
-java -jar target/headless-ecommerce-api-1.0.0.jar
-```
-
-### Running Tests
-
-```bash
-# Smoke test (H2 in-memory, no PostgreSQL required)
-JAVA_HOME=$JAVA_HOME mvn test
+# Compile and package the JAR (skip tests)
+mvn clean package -DskipTests=true
 ```
 
 ---
+
+<div align="center">
+
+Built with security-first principles · Designed for automated validation pipelines
+
+</div>
