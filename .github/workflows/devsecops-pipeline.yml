@@ -336,3 +336,17 @@ jobs:
           cd terraform/infra-network
           terraform init -reconfigure -backend-config="key=ephemeral/terraform.tfstate"
           terraform destroy -auto-approve -var="db_username=postgres"
+
+  # ==============================================================================
+  # JOB 6: BRANCH PROTECTION COMPLIANCE RECONCILIATION
+  # ==============================================================================
+  secure-validation-gate:
+    needs: [static-security-scans, build-and-verify, ephemeral-deploy, dast-penetration-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert Full Pipeline Compliance Success
+        run: |
+          echo "============================================================"
+          echo "  SUCCESS: All parallel security gates and DAST testing lines"
+          echo "           have compiled and verified cleanly."
+          echo "============================================================"
