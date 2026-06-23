@@ -210,13 +210,45 @@ jobs:
       # Real-Time Log Extraction Step
       - name: Audit AWS Infrastructure State & Target Group Telemetry
         run: |
-          echo "=== AUDITING AWS APPLICATION LOAD BALANCER STATUS ==="
-          aws elbv2 describe-load-balancers --load-balancer-arns "${{ needs.ephemeral-deploy.outputs.alb_arn }}" --query "LoadBalancers[0].State.Code" --output text
+          echo "=== 1/4 AUDITING ALB STATUS ==="
+          aws elbv2 describe-load-balancers \
+            --load-balancer-arns "${{ needs.ephemeral-deploy.outputs.alb_arn }}" \
+            --query "LoadBalancers[0].{State:State.Code,DNSName:DNSName,Scheme:Scheme}" \
+            --output table
 
-          echo "=== AUDITING TARGET GROUP HEALTH DESCRIPTION ==="
-          aws elbv2 describe-target-health --target-group-arn "${{ needs.ephemeral-deploy.outputs.tg_arn }}"
+          echo ""
+          echo "=== 2/4 TARGET GROUP HEALTH (with failure reasons) ==="
+          aws elbv2 describe-target-health \
+            --target-group-arn "${{ needs.ephemeral-deploy.outputs.tg_arn }}" \
+            --query "TargetHealthDescriptions[*].{TargetId:Target.Id,Port:Target.Port,State:TargetHealth.State,Reason:TargetHealth.Reason,Description:TargetHealth.Description}" \
+            --output table
+
+          echo ""
+          echo "=== 3/4 ASG INSTANCE STATUS ==="
+          ASG_NAME="devsecops-p02-asg"
+          INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "$ASG_NAME" \
+            --query "AutoScalingGroups[0].Instances[*].InstanceId" \
+            --output text 2>/dev/null || echo "")
+          if [ -n "$INSTANCE_IDS" ]; then
+            echo "Registered instances: $INSTANCE_IDS"
+            aws ec2 describe-instance-status \
+              --instance-ids $INSTANCE_IDS \
+              --query "InstanceStatuses[*].{InstanceId:InstanceId,State:InstanceState.Name,SystemStatus:SystemStatus.Status,InstanceStatus:InstanceStatus.Status}" \
+              --output table 2>/dev/null || echo "Instance status not yet available"
+          else
+            echo "WARNING: No instances found in ASG '$ASG_NAME'"
+          fi
+
+          echo ""
+          echo "=== 4/4 TARGET GROUP CONFIGURATION ==="
+          aws elbv2 describe-target-groups \
+            --target-group-arns "${{ needs.ephemeral-deploy.outputs.tg_arn }}" \
+            --query "TargetGroups[0].{HealthCheckPath:HealthCheckPath,HealthCheckPort:HealthCheckPort,Protocol:Protocol,Port:Port}" \
+            --output table
 
       - name: Wait for Environment to Pass ALB Health Checks
+        id: health_check
         run: |
           TARGET_URL="${{ needs.ephemeral-deploy.outputs.dynamic_url }}"
           echo "Polling target environment: $TARGET_URL"
@@ -231,6 +263,36 @@ jobs:
           done
           echo "Error: Target environment failed to stabilize within 10 minutes."
           exit 1
+
+      # This step ONLY runs if the health check above failed — captures EC2 bootstrap logs
+      - name: Failure Diagnostics — Extract EC2 Console Output & Final Target State
+        if: failure() && steps.health_check.outcome == 'failure'
+        run: |
+          echo "============================================================"
+          echo "  FAILURE DIAGNOSTICS: Extracting root cause telemetry"
+          echo "============================================================"
+
+          echo ""
+          echo "=== FINAL TARGET GROUP HEALTH STATE ==="
+          aws elbv2 describe-target-health \
+            --target-group-arn "${{ needs.ephemeral-deploy.outputs.tg_arn }}" \
+            --output json
+
+          echo ""
+          echo "=== EC2 CONSOLE OUTPUT (user-data bootstrap logs) ==="
+          ASG_NAME="devsecops-p02-asg"
+          INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "$ASG_NAME" \
+            --query "AutoScalingGroups[0].Instances[*].InstanceId" \
+            --output text 2>/dev/null || echo "")
+          for INSTANCE_ID in $INSTANCE_IDS; do
+            echo "--- Console output for $INSTANCE_ID ---"
+            aws ec2 get-console-output \
+              --instance-id "$INSTANCE_ID" \
+              --latest \
+              --query "Output" \
+              --output text 2>/dev/null | tail -80 || echo "Console output not yet available"
+          done
 
       - name: Remediate Workspace Permissions for Non-Root Docker Runners
         run: sudo chmod -R 777 ${{ github.workspace }}
