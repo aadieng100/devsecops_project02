@@ -1,6 +1,3 @@
-# Dynamic lookup to retrieve your current AWS Account ID for policies
-data "aws_caller_identity" "current" {}
-
 # Ephemeral deployment bucket to store the application payloads
 resource "aws_s3_bucket" "app_deploy" {
   bucket        = "${var.project_name}-app-deploy-bucket-99"
