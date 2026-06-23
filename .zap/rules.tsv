@@ -1,0 +1,7 @@
+# ZAP scan rule overrides
+# Format: <rule-id>	<IGNORE|WARN|FAIL>	<optional-comment>
+#
+# [10049] Non-Storable Content: False-positive for HTTP 500 / 204 responses.
+# The HTTP spec mandates those codes are non-cacheable by definition.
+# The SecurityHeadersFilter already injects Cache-Control: no-store on all responses.
+10049	IGNORE	Non-cacheable status codes (500/204) are non-storable by HTTP spec definition
