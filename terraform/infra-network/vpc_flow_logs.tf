@@ -6,6 +6,17 @@ resource "aws_s3_bucket" "flow_logs" {
   tags = { Name = "${var.project_name}-flow-logs-bucket" }
 }
 
+# FIX CKV_AWS_145: Enforce Default Server-Side Encryption using AWS Managed KMS Keys
+resource "aws_s3_bucket_server_side_encryption_configuration" "flow_logs_encryption" {
+  bucket = aws_s3_bucket.flow_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "aws:kms"
+    }
+  }
+}
+
 # 2. Strict Public Access Block for Log Integrity
 resource "aws_s3_bucket_public_access_block" "flow_logs_public_block" {
   bucket = aws_s3_bucket.flow_logs.id
