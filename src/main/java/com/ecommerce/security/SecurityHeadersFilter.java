@@ -13,13 +13,17 @@ public class SecurityHeadersFilter implements Filter {
             throws IOException, ServletException {
         HttpServletResponse httpResponse = (HttpServletResponse) response;
 
-        // Fix 10021: Stop browsers from sniffing content types away from declared
-        // headers
+        // FIX 10021: Stop browsers from sniffing content types away from declared
+        // payloads
         httpResponse.setHeader("X-Content-Type-Options", "nosniff");
 
-        // Fix 90004: Prevent cross-origin tracking and protect resource consumption
-        // boundaries
+        // FIX 90004: Isolate resource boundaries against cross-origin tracking
+        // mechanisms
         httpResponse.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+
+        // FIX 10049: Prevent web browsers from caching sensitive REST API or error data
+        httpResponse.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        httpResponse.setHeader("Pragma", "no-cache");
 
         chain.doFilter(request, response);
     }

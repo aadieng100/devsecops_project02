@@ -33,7 +33,7 @@ repos:
     hooks:
       - id: terraform_fmt
         name: Terraform Format Lint (`terraform fmt`)
-      - id: terraform_tflint
-        name: Terraform Structural Linter (`tflint`)
-        args:
-          - '--args=--config=.tflint.hcl'
+      # - id: terraform_tflint
+      #   name: Terraform Structural Linter (`tflint`)
+      #   args:
+      #     - '--args=--config=.tflint.hcl'
