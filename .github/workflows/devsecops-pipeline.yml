@@ -264,7 +264,7 @@ jobs:
           echo "Error: Target environment failed to stabilize within 10 minutes."
           exit 1
 
-      # This step ONLY runs if the health check above failed — captures EC2 bootstrap logs
+      # this step ONLY runs if the health check above failed — captures EC2 bootstrap logs
       - name: Failure Diagnostics — Extract EC2 Console Output & Final Target State
         if: failure() && steps.health_check.outcome == 'failure'
         run: |
