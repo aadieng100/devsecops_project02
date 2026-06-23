@@ -62,11 +62,9 @@ resource "aws_launch_template" "app_template" {
               # ==============================================================================
               # CONFIGURATION BRIDGE: Dynamically write the cloud variables to a local .env
               # ==============================================================================
-              cat <<EON > /app/.env
-              RDS_ENDPOINT=${aws_db_instance.postgres.address}
-              DB_USERNAME=${var.db_username}
-              DB_PASSWORD=${random_password.db_password.result}
-              EON
+              echo "RDS_ENDPOINT=${aws_db_instance.postgres.address}" > /app/.env
+              echo "DB_USERNAME=${var.db_username}" >> /app/.env
+              echo "DB_PASSWORD=${random_password.db_password.result}" >> /app/.env
 
               # Launch the optimized Spring Boot container runtime
               docker compose up --build -d

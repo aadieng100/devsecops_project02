@@ -155,7 +155,21 @@ jobs:
           cd terraform/infra-network
           BUCKET_NAME=$(terraform output -raw app_deploy_bucket_name)
           aws s3 cp ../../target/headless-ecommerce-api-1.0.0.jar s3://$BUCKET_NAME/app.jar
-          aws s3 cp ../../Dockerfile s3://$BUCKET_NAME/Dockerfile
+
+          # Generate a staging-optimized Dockerfile that uses the pre-compiled JAR
+          # The dev Dockerfile rebuilds from source (pom.xml + src/) which don't exist on EC2
+          printf '%s\n' \
+            'FROM eclipse-temurin:17-jre-alpine' \
+            'WORKDIR /app' \
+            'RUN apk update && apk upgrade --no-cache' \
+            'RUN addgroup -S appgroup && adduser -S appuser -G appgroup' \
+            'USER appuser' \
+            'COPY app.jar app.jar' \
+            'EXPOSE 8080' \
+            'ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]' \
+            > /tmp/Dockerfile.staging
+          aws s3 cp /tmp/Dockerfile.staging s3://$BUCKET_NAME/Dockerfile
+
           aws s3 cp ../../docker-compose.yml s3://$BUCKET_NAME/docker-compose.yml
 
       # Deploy the full network, auto-scaling compute, and database infrastructure map
@@ -206,16 +220,16 @@ jobs:
         run: |
           TARGET_URL="${{ needs.ephemeral-deploy.outputs.dynamic_url }}"
           echo "Polling target environment: $TARGET_URL"
-          for i in {1..30}; do # Dropped back to a sensible 5-minute threshold
+          for i in {1..60}; do
             STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$TARGET_URL" || echo "000")
             if [ "$STATUS_CODE" -eq 200 ] || [ "$STATUS_CODE" -eq 404 ]; then
               echo "Environment is healthy! Received Status Code: $STATUS_CODE"
               exit 0
             fi
-            echo "Waiting for backend app initialization (Current Code: $STATUS_CODE)... Retrying in 10s [attempt $i/30]"
+            echo "Waiting for backend app initialization (Current Code: $STATUS_CODE)... Retrying in 10s [attempt $i/60]"
             sleep 10
           done
-          echo "Error: Target environment failed to stabilize within 5 minutes."
+          echo "Error: Target environment failed to stabilize within 10 minutes."
           exit 1
 
       - name: Remediate Workspace Permissions for Non-Root Docker Runners
