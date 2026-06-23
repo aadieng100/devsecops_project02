@@ -305,6 +305,7 @@ jobs:
           target: ${{ needs.ephemeral-deploy.outputs.dynamic_url }}
           rules_file_name: ".zap/rules.tsv"
           fail_action: false
+          artifact_name: "zap-compliance-report"
           issue_title: "Security Regression Vulnerability Flagged by OWASP ZAP DAST"
 
   # ==============================================================================
