@@ -1,4 +1,4 @@
-name: "DevSecOps: Ephemeral Security Validation Engine"
+name: "DevSecOps: Ephemeral Parallel Validation Engine"
 
 on:
   pull_request:
@@ -13,15 +13,15 @@ on:
       - "Dockerfile"
 
 permissions:
-  id-token: write   # Mandatory for keyless AWS OIDC Federation
+  id-token: write   # Required for keyless AWS OIDC Federation
   contents: read    # Required to check out code
-  issues: write     # Allows OWASP ZAP to post security tickets directly to your PR
+  issues: write     # Allows OWASP ZAP to publish findings directly to your PR
 
 jobs:
   # ==============================================================================
-  # THE SINGLE DEFINITIVE EPHEMERAL VALIDATION GATE
+  # JOB 1: PARALLEL STATIC SECURITY SCANS
   # ==============================================================================
-  ephemeral-validation-gate:
+  static-security-scans:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
@@ -29,23 +29,36 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 1. SECRET SCANNING: Deep commit history credential audits
       - name: Run Trufflehog Secret Scan
         uses: trufflesecurity/trufflehog@main
         with:
           base: ${{ github.event.pull_request.base.sha }}
           head: ${{ github.event.pull_request.head.sha }}
           extra_args: --debug --only-verified
-        continue-on-error: false
 
-      # 2. SAST: Semgrep semantic analysis (Java standard + OWASP Top 10 rules)
-      - name: Run Semgrep Static Application Security Testing
+      - name: Run Semgrep Code Analysis
         run: |
           docker run --rm -v "${{ github.workspace }}:/src" returntocorp/semgrep semgrep scan \
             --config=p/java --config=p/owasp-top-ten
-        continue-on-error: true
+        continue-on-error: false # Flipped to false for enterprise hardening
 
-      # 3. COMPILATION LAYER
+      - name: Run Checkov IaC Security Verification
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: terraform/infra-network
+          framework: terraform
+          soft_fail: false # Flipped to false to block vulnerable IaC configurations
+
+  # ==============================================================================
+  # JOB 2: COMPILATION & CONTAINER COMPLIANCE VETTING
+  # ==============================================================================
+  build-and-verify:
+    needs: static-security-scans
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
       - name: Initialize Java Enterprise Environment
         uses: actions/setup-java@v4
         with:
@@ -56,7 +69,6 @@ jobs:
       - name: Execute Spring Boot Code Compilation
         run: mvn clean package -DskipTests=true
 
-      # 4. SCA: Trivy file system dependency vulnerability scans
       - name: Run Trivy Software Composition Analysis (SCA)
         uses: aquasecurity/trivy-action@master
         with:
@@ -67,7 +79,6 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
 
-      # 5. CONTAINER SCANNING: Verify built Docker layer compliance
       - name: Build Application Container Image
         run: docker build -t devsecops-p02-app:${{ github.sha }} .
 
@@ -79,15 +90,18 @@ jobs:
           severity: 'CRITICAL,HIGH'
           exit-code: '1'
 
-      # 6. IaC ASSESSMENT: Checkov configuration scans
-      - name: Run Checkov IaC Security Verification
-        uses: bridgecrewio/checkov-action@master
-        with:
-          directory: terraform/infra-network
-          framework: terraform
-          soft_fail: true
+  # ==============================================================================
+  # JOB 3: EPHEMERAL INFRASTRUCTURE DEPLOYMENT (WITH LINT GATES)
+  # ==============================================================================
+  ephemeral-deploy:
+    needs: build-and-verify
+    runs-on: ubuntu-latest
+    outputs:
+      dynamic_url: ${{ steps.process_outputs.outputs.alb_url }}
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
 
-      # 7. AWS KEYLESS OIDC AUTHENTICATION EXCHANGE
       - name: Authenticate to AWS via OIDC Identity Provider
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -95,39 +109,96 @@ jobs:
           aws-region: "eu-west-3"
           audience: "sts.amazonaws.com"
 
-      # 8. EPHEMERAL INFRASTRUCTURE DEPLOYMENT
-      - name: Initialize Terraform Runtime
+      - name: Setup Terraform Runtime
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.15.6"
 
-      - name: Spin Up Temporary Validation Environment
-        id: infra_deploy
+      # Enhanced Infrastructure Quality Gates
+      - name: Execute IaC Verification Checks
         run: |
           cd terraform/infra-network
           terraform init -reconfigure -backend-config="key=ephemeral/terraform.tfstate"
+          terraform fmt -check
+          terraform validate
+          terraform plan -var="db_username=postgres"
+
+      - name: Spin Up Temporary Validation Environment
+        run: |
+          cd terraform/infra-network
           terraform apply -auto-approve -var="db_username=postgres"
 
+      # Extract output and expose it to subsequent jobs via the global workflow bus
+      - name: Process and Export Network Targets
+        id: process_outputs
+        run: |
+          cd terraform/infra-network
           LIVE_ALB_DNS=$(terraform output -raw alb_dns_name)
-          echo "dynamic_url=http://$LIVE_ALB_DNS" >> $GITHUB_OUTPUT
+          echo "alb_url=http://$LIVE_ALB_DNS" >> $GITHUB_OUTPUT
 
-      # 9. DAST RESOLUTION PRE-REQUISITES
+  # ==============================================================================
+  # JOB 4: DAST PENETRATION FUZZING (WITH HEALTH CHECK POLLING LOOP)
+  # ==============================================================================
+  dast-penetration-test:
+    needs: ephemeral-deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      # 502 Remediation Pass: Poll the ALB until the backend container returns a valid HTTP status
+      - name: Wait for Environment to Pass ALB Health Checks
+        run: |
+          TARGET_URL="${{ needs.ephemeral-deploy.outputs.dynamic_url }}"
+          echo "Polling target environment: $TARGET_URL"
+          for i in {1..30}; do
+            STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$TARGET_URL" || echo "000")
+            if [ "$STATUS_CODE" -eq 200 ] || [ "$STATUS_CODE" -eq 404 ]; then
+              echo "Environment is healthy! Received Status Code: $STATUS_CODE"
+              exit 0
+            fi
+            echo "Waiting for backend app initialization (Current Code: $STATUS_CODE)... Retrying in 10s"
+            sleep 10
+          done
+          echo "Error: Target environment failed to stabilize within 5 minutes."
+          exit 1
+
       - name: Remediate Workspace Permissions for Non-Root Docker Runners
         run: sudo chmod -R 777 ${{ github.workspace }}
 
-      # 10. DAST: Active OWASP ZAP penetration fuzzing against the ephemeral ALB URL
       - name: Execute Active OWASP ZAP Penetration Assessment
         uses: zaproxy/action-baseline@v0.12.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          target: ${{ steps.infra_deploy.outputs.dynamic_url }}
+          target: ${{ needs.ephemeral-deploy.outputs.dynamic_url }}
           rules_file_name: ".zap/rules.tsv"
           fail_action: false
           issue_title: "Security Regression Vulnerability Flagged by OWASP ZAP DAST"
 
-      # 11. AUTOMATED CLEANUP: Enforce destruction regardless of previous job outcomes
+  # ==============================================================================
+  # JOB 5: GUARANTEED INFRASTRUCTURE TEARDOWN
+  # ==============================================================================
+  infrastructure-teardown:
+    needs: [ephemeral-deploy, dast-penetration-test]
+    if: always() # Enforces cleanup even if any preceding step or job crashes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to AWS via OIDC Identity Provider
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: "arn:aws:iam::554000694003:role/devsecops-p02-github-actions-role"
+          aws-region: "eu-west-3"
+          audience: "sts.amazonaws.com"
+
+      - name: Setup Terraform Runtime
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.6"
+
       - name: Enforce Ephemeral Infrastructure Destruction
-        if: always()
         run: |
           cd terraform/infra-network
           terraform init -reconfigure -backend-config="key=ephemeral/terraform.tfstate"
