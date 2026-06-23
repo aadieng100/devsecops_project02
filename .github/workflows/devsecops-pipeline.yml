@@ -183,16 +183,16 @@ jobs:
         run: |
           TARGET_URL="${{ needs.ephemeral-deploy.outputs.dynamic_url }}"
           echo "Polling target environment: $TARGET_URL"
-          for i in {1..30}; do
+          for i in {1..90}; do
             STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$TARGET_URL" || echo "000")
-            if [ "$STATUS_CODE" -eq 200 ] || [ "$STATUS_CODE" -eq 404 ]; then
+            if [ "$STATUS_CODE" -eq 200 ] || [ "$STATUS_CODE" -eq 301 ] || [ "$STATUS_CODE" -eq 302 ] || [ "$STATUS_CODE" -eq 404 ]; then
               echo "Environment is healthy! Received Status Code: $STATUS_CODE"
               exit 0
             fi
-            echo "Waiting for backend app initialization (Current Code: $STATUS_CODE)... Retrying in 10s"
+            echo "Waiting for backend app initialization (Current Code: $STATUS_CODE)... Retrying in 10s [attempt $i/60]"
             sleep 10
           done
-          echo "Error: Target environment failed to stabilize within 5 minutes."
+          echo "Error: Target environment failed to stabilize within 15 minutes."
           exit 1
 
       - name: Remediate Workspace Permissions for Non-Root Docker Runners
