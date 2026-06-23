@@ -27,17 +27,37 @@ resource "aws_launch_template" "app_template" {
     security_groups             = [aws_security_group.app.id]
   }
 
-  # Automated Workstation Bootstrapping Script
+  # Automated Production Bootstrapping & Payload Injection Execution
   user_data = base64encode(<<-EOF
               #!/bin/bash
+              # Redirect stdout/stderr logs to track bootstrap health execution outputs
+              exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/null) 2>&1
+
               apt-get update -y
-              apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+              apt-get install -y apt-transport-https ca-certificates curl software-properties-common unzip
               curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
               add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu jammy stable"
               apt-get update -y
               apt-get install -y docker-ce docker-compose-plugin
               systemctl enable docker
               systemctl start docker
+
+              # Install AWS CLI v2 natively to execute container staging downloads
+              curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+              unzip awscliv2.zip
+              ./aws/install
+
+              # Establish an isolated application runtime directory
+              mkdir -p /app
+              cd /app
+
+              # Download the pre-vetted compliance payloads directly from your S3 sandbox
+              aws s3 cp s3://${aws_s3_bucket.app_deploy.bucket}/app.jar .
+              aws s3 cp s3://${aws_s3_bucket.app_deploy.bucket}/Dockerfile .
+              aws s3 cp s3://${aws_s3_bucket.app_deploy.bucket}/docker-compose.yml .
+
+              # Run your decoupled Spring Boot and Postgres engine container architecture
+              docker compose up --build -d
               EOF
   )
 

@@ -32,3 +32,7 @@ output "db_instance_address" {
   value       = aws_db_instance.postgres.address
   description = "The specific software-defined DNS address of the database cluster"
 }
+output "app_deploy_bucket_name" {
+  value       = aws_s3_bucket.app_deploy.bucket
+  description = "The dynamic name of the ephemeral deployment storage cell"
+}
