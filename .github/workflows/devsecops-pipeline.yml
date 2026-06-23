@@ -251,11 +251,12 @@ jobs:
         id: health_check
         run: |
           TARGET_URL="${{ needs.ephemeral-deploy.outputs.dynamic_url }}"
-          echo "Polling target environment: $TARGET_URL"
+          HEALTH_URL="${TARGET_URL}/actuator/health"
+          echo "Polling target health endpoint: $HEALTH_URL"
           for i in {1..60}; do
-            STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$TARGET_URL" || echo "000")
-            if [ "$STATUS_CODE" -eq 200 ] || [ "$STATUS_CODE" -eq 404 ]; then
-              echo "Environment is healthy! Received Status Code: $STATUS_CODE"
+            STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || echo "000")
+            if [ "$STATUS_CODE" -eq 200 ]; then
+              echo "Environment is healthy! Actuator health returned: $STATUS_CODE"
               exit 0
             fi
             echo "Waiting for backend app initialization (Current Code: $STATUS_CODE)... Retrying in 10s [attempt $i/60]"
