@@ -6,6 +6,9 @@ resource "aws_lb" "external" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = aws_subnet.public[*].id
 
+  # FIX CKV_AWS_131: Instruct the proxy parser to drop non-conforming header injections
+  drop_invalid_header_fields = true
+
   tags = { Name = "${var.project_name}-alb" }
 }
 

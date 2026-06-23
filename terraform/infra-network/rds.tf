@@ -1,10 +1,30 @@
 # ==============================================================================
 # 1. CRYPTOGRAPHIC BOUNDARY (Dedicated KMS CMK for Storage Encryption at Rest)
 # ==============================================================================
+
+# Dynamic lookup to retrieve your current AWS Account ID for the KMS policy
+data "aws_caller_identity" "current" {}
+
 resource "aws_kms_key" "rds" {
   description             = "KMS Customer Managed Key for explicit RDS storage volume encryption"
   deletion_window_in_days = 7 # Cost mitigation constraint for sandbox lifecycle
   enable_key_rotation     = true
+
+  # FIX CKV2_AWS_64: Define an explicit KMS Key Policy allowing account root administration
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "Enable IAM User Permissions"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      }
+    ]
+  })
 
   tags = { Name = "${var.project_name}-rds-kms-key" }
 }
@@ -112,6 +132,12 @@ resource "aws_db_instance" "postgres" {
   # Cryptographic Data Protection
   storage_encrypted = true
   kms_key_id        = aws_kms_key.rds.arn
+
+  # FIX CKV_AWS_226: Enable automated compliance patch management
+  auto_minor_version_upgrade = true
+
+  # FIX CKV_AWS_161: Enable IAM Database Authentication
+  iam_database_authentication_enabled = true
 
   # Operational Safeguards & Costs Management
   backup_retention_period = 3 # Retain automated transaction logs for 72 hours

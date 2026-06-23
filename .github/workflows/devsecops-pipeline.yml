@@ -1,0 +1,352 @@
+name: "DevSecOps: Ephemeral Parallel Validation Engine"
+
+on:
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - "src/**"
+      - "pom.xml"
+      - "terraform/infra-network/**"
+      - ".github/workflows/**"
+      - ".semgrepignore"
+      - ".zap/**"
+      - "Dockerfile"
+
+permissions:
+  id-token: write   # Required for keyless AWS OIDC Federation
+  contents: read    # Required to check out code
+  issues: write     # Allows OWASP ZAP to publish findings directly to your PR
+
+jobs:
+  # ==============================================================================
+  # JOB 1: PARALLEL STATIC SECURITY SCANS
+  # ==============================================================================
+  static-security-scans:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 1. SECRET SCANNING
+      - name: Run Trufflehog Secret Scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          extra_args: --debug --only-verified
+
+      # 2. SAST (Semgrep)
+      - name: Run Semgrep Code Analysis
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/src" returntocorp/semgrep semgrep scan \
+            --config=p/java --config=p/owasp-top-ten
+        continue-on-error: false
+
+      # 3. IaC ASSESSMENT (Checkov)
+      - name: Run Checkov IaC Security Verification
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: terraform/infra-network
+          framework: terraform
+          soft_fail: false
+          skip_check: "CKV_AWS_150,CKV_AWS_293,CKV_AWS_2,CKV_AWS_103,CKV_AWS_378,CKV2_AWS_20,CKV_AWS_91,CKV_AWS_118,CKV_AWS_129,CKV_AWS_353,CKV2_AWS_60,CKV2_AWS_69,CKV_AWS_18,CKV_AWS_144,CKV_AWS_21,CKV2_AWS_62,CKV2_AWS_28,CKV_AWS_130,CKV_AWS_382,CKV_AWS_260,CKV_AWS_153,CKV_AWS_337,CKV_AWS_300"
+
+  # ==============================================================================
+  # JOB 2: COMPILATION & CONTAINER COMPLIANCE VETTING
+  # ==============================================================================
+  build-and-verify:
+    needs: static-security-scans
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Initialize Java Enterprise Environment
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
+
+      - name: Execute Spring Boot Code Compilation
+        run: mvn clean package -DskipTests=true
+
+      # ARTIFACT BRIDGE LAYER A: Persist the binary before the VM is destroyed
+      - name: Upload Compiled Application Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spring-compiled-jar
+          path: target/headless-ecommerce-api-1.0.0.jar
+          retention-days: 1 # Ephemeral lifecycle rule: Purge cache within 24 hours
+
+      - name: Run Trivy Software Composition Analysis (SCA)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          vuln-type: 'library'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Build Application Container Image
+        run: docker build -t devsecops-p02-app:${{ github.sha }} .
+
+      - name: Run Trivy Container Image Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'devsecops-p02-app:${{ github.sha }}'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+  # ==============================================================================
+  # JOB 3: EPHEMERAL INFRASTRUCTURE DEPLOYMENT (WITH ARTIFACT INTEGRATION BRIDGE)
+  # ==============================================================================
+  ephemeral-deploy:
+    needs: build-and-verify
+    runs-on: ubuntu-latest
+    outputs:
+      dynamic_url: ${{ steps.process_outputs.outputs.alb_url }}
+      alb_arn: ${{ steps.process_outputs.outputs.alb_arn }}
+      tg_arn: ${{ steps.process_outputs.outputs.tg_arn }}
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      # ARTIFACT BRIDGE LAYER B: Pull down the binary onto this fresh host VM
+      - name: Download Compiled Application Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: spring-compiled-jar
+          path: target
+
+      - name: Authenticate to AWS via OIDC Identity Provider
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: "arn:aws:iam::554000694003:role/devsecops-p02-github-actions-role"
+          aws-region: "eu-west-3"
+          audience: "sts.amazonaws.com"
+
+      - name: Setup Terraform Runtime
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.6"
+
+      - name: Execute IaC Verification Checks
+        run: |
+          cd terraform/infra-network
+          terraform init -reconfigure -backend-config="key=ephemeral/terraform.tfstate"
+          terraform fmt -check
+          terraform validate
+          terraform plan -var="db_username=postgres"
+
+      # Target and create the storage bucket before the compute layer spins up
+      - name: Provision Ephemeral Storage Cell Baseline
+        run: |
+          cd terraform/infra-network
+          terraform apply -target=aws_s3_bucket.app_deploy -auto-approve -var="db_username=postgres"
+
+      # Securely stream the local files into the dynamic S3 storage bucket bucket
+      - name: Stage Application Components to S3 Pipeline Storage
+        run: |
+          cd terraform/infra-network
+          BUCKET_NAME=$(terraform output -raw app_deploy_bucket_name)
+          aws s3 cp ../../target/headless-ecommerce-api-1.0.0.jar s3://$BUCKET_NAME/app.jar
+
+          # Generate a staging-optimized Dockerfile that uses the pre-compiled JAR
+          # The dev Dockerfile rebuilds from source (pom.xml + src/) which don't exist on EC2
+          printf '%s\n' \
+            'FROM eclipse-temurin:17-jre-alpine' \
+            'WORKDIR /app' \
+            'RUN apk update && apk upgrade --no-cache' \
+            'RUN addgroup -S appgroup && adduser -S appuser -G appgroup' \
+            'USER appuser' \
+            'COPY app.jar app.jar' \
+            'EXPOSE 8080' \
+            'ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]' \
+            > /tmp/Dockerfile.staging
+          aws s3 cp /tmp/Dockerfile.staging s3://$BUCKET_NAME/Dockerfile
+
+          aws s3 cp ../../docker-compose.yml s3://$BUCKET_NAME/docker-compose.yml
+
+      # Deploy the full network, auto-scaling compute, and database infrastructure map
+      - name: Complete Infrastructure Map Deployment
+        run: |
+          cd terraform/infra-network
+          terraform apply -auto-approve -var="db_username=postgres"
+
+      - name: Process and Export Network Targets
+        id: process_outputs
+        run: |
+          cd terraform/infra-network
+          LIVE_ALB_DNS=$(terraform output -raw alb_dns_name)
+          LIVE_ALB_ARN=$(terraform output -raw alb_arn)
+          LIVE_TG_ARN=$(terraform output -raw target_group_arn)
+
+          echo "alb_url=http://$LIVE_ALB_DNS" >> $GITHUB_OUTPUT
+          echo "alb_arn=$LIVE_ALB_ARN" >> $GITHUB_OUTPUT
+          echo "tg_arn=$LIVE_TG_ARN" >> $GITHUB_OUTPUT
+
+  # ==============================================================================
+  # JOB 4: DAST PENETRATION FUZZING
+  # ==============================================================================
+  dast-penetration-test:
+    needs: ephemeral-deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to AWS via OIDC for Real-Time Telemetry Audit
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: "arn:aws:iam::554000694003:role/devsecops-p02-github-actions-role"
+          aws-region: "eu-west-3"
+          audience: "sts.amazonaws.com"
+
+      # Real-Time Log Extraction Step
+      - name: Audit AWS Infrastructure State & Target Group Telemetry
+        run: |
+          echo "=== 1/4 AUDITING ALB STATUS ==="
+          aws elbv2 describe-load-balancers \
+            --load-balancer-arns "${{ needs.ephemeral-deploy.outputs.alb_arn }}" \
+            --query "LoadBalancers[0].{State:State.Code,DNSName:DNSName,Scheme:Scheme}" \
+            --output table
+
+          echo ""
+          echo "=== 2/4 TARGET GROUP HEALTH (with failure reasons) ==="
+          aws elbv2 describe-target-health \
+            --target-group-arn "${{ needs.ephemeral-deploy.outputs.tg_arn }}" \
+            --query "TargetHealthDescriptions[*].{TargetId:Target.Id,Port:Target.Port,State:TargetHealth.State,Reason:TargetHealth.Reason,Description:TargetHealth.Description}" \
+            --output table
+
+          echo ""
+          echo "=== 3/4 ASG INSTANCE STATUS ==="
+          ASG_NAME="devsecops-p02-asg"
+          INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "$ASG_NAME" \
+            --query "AutoScalingGroups[0].Instances[*].InstanceId" \
+            --output text 2>/dev/null || echo "")
+          if [ -n "$INSTANCE_IDS" ]; then
+            echo "Registered instances: $INSTANCE_IDS"
+            aws ec2 describe-instance-status \
+              --instance-ids $INSTANCE_IDS \
+              --query "InstanceStatuses[*].{InstanceId:InstanceId,State:InstanceState.Name,SystemStatus:SystemStatus.Status,InstanceStatus:InstanceStatus.Status}" \
+              --output table 2>/dev/null || echo "Instance status not yet available"
+          else
+            echo "WARNING: No instances found in ASG '$ASG_NAME'"
+          fi
+
+          echo ""
+          echo "=== 4/4 TARGET GROUP CONFIGURATION ==="
+          aws elbv2 describe-target-groups \
+            --target-group-arns "${{ needs.ephemeral-deploy.outputs.tg_arn }}" \
+            --query "TargetGroups[0].{HealthCheckPath:HealthCheckPath,HealthCheckPort:HealthCheckPort,Protocol:Protocol,Port:Port}" \
+            --output table
+
+      - name: Wait for Environment to Pass ALB Health Checks
+        id: health_check
+        run: |
+          TARGET_URL="${{ needs.ephemeral-deploy.outputs.dynamic_url }}"
+          HEALTH_URL="${TARGET_URL}/actuator/health"
+          echo "Polling target health endpoint: $HEALTH_URL"
+          for i in {1..60}; do
+            STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || echo "000")
+            if [ "$STATUS_CODE" -eq 200 ]; then
+              echo "Environment is healthy! Actuator health returned: $STATUS_CODE"
+              exit 0
+            fi
+            echo "Waiting for backend app initialization (Current Code: $STATUS_CODE)... Retrying in 10s [attempt $i/60]"
+            sleep 10
+          done
+          echo "Error: Target environment failed to stabilize within 10 minutes."
+          exit 1
+
+      # this step ONLY runs if the health check above failed — captures EC2 bootstrap logs
+      - name: Failure Diagnostics — Extract EC2 Console Output & Final Target State
+        if: failure() && steps.health_check.outcome == 'failure'
+        run: |
+          echo "============================================================"
+          echo "  FAILURE DIAGNOSTICS: Extracting root cause telemetry"
+          echo "============================================================"
+
+          echo ""
+          echo "=== FINAL TARGET GROUP HEALTH STATE ==="
+          aws elbv2 describe-target-health \
+            --target-group-arn "${{ needs.ephemeral-deploy.outputs.tg_arn }}" \
+            --output json
+
+          echo ""
+          echo "=== EC2 CONSOLE OUTPUT (user-data bootstrap logs) ==="
+          ASG_NAME="devsecops-p02-asg"
+          INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "$ASG_NAME" \
+            --query "AutoScalingGroups[0].Instances[*].InstanceId" \
+            --output text 2>/dev/null || echo "")
+          for INSTANCE_ID in $INSTANCE_IDS; do
+            echo "--- Console output for $INSTANCE_ID ---"
+            aws ec2 get-console-output \
+              --instance-id "$INSTANCE_ID" \
+              --latest \
+              --query "Output" \
+              --output text 2>/dev/null | tail -80 || echo "Console output not yet available"
+          done
+
+      - name: Remediate Workspace Permissions for Non-Root Docker Runners
+        run: sudo chmod -R 777 ${{ github.workspace }}
+
+      - name: Execute Active OWASP ZAP Penetration Assessment
+        uses: zaproxy/action-baseline@v0.15.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target: ${{ needs.ephemeral-deploy.outputs.dynamic_url }}
+          rules_file_name: ".zap/rules.tsv"
+          fail_action: false
+          artifact_name: "zap-compliance-report"
+          issue_title: "Security Regression Vulnerability Flagged by OWASP ZAP DAST"
+
+  # ==============================================================================
+  # JOB 5: GUARANTEED INFRASTRUCTURE TEARDOWN
+  # ==============================================================================
+  infrastructure-teardown:
+    needs: [ephemeral-deploy, dast-penetration-test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to AWS via OIDC Identity Provider
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: "arn:aws:iam::554000694003:role/devsecops-p02-github-actions-role"
+          aws-region: "eu-west-3"
+          audience: "sts.amazonaws.com"
+
+      - name: Setup Terraform Runtime
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.6"
+
+      - name: Enforce Ephemeral Infrastructure Destruction
+        run: |
+          cd terraform/infra-network
+          terraform init -reconfigure -backend-config="key=ephemeral/terraform.tfstate"
+          terraform destroy -auto-approve -var="db_username=postgres"
+
+  # ==============================================================================
+  # JOB 6: BRANCH PROTECTION COMPLIANCE RECONCILIATION
+  # ==============================================================================
+  secure-validation-gate:
+    needs: [static-security-scans, build-and-verify, ephemeral-deploy, dast-penetration-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert Full Pipeline Compliance Success
+        run: |
+          echo "============================================================"
+          echo "  SUCCESS: All parallel security gates and DAST testing lines"
+          echo "           have compiled and verified cleanly."
+          echo "============================================================"

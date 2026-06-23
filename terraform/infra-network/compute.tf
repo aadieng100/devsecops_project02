@@ -15,22 +15,59 @@ resource "aws_launch_template" "app_template" {
   image_id      = data.aws_ami.ubuntu.id
   instance_type = "t2.micro" # Free-tier constraint enforced for cost-mitigation
 
+  iam_instance_profile {
+    arn = aws_iam_instance_profile.ec2_profile.arn
+  }
+
+  # FIX CKV_AWS_79: Enforce modern IMDSv2 token validation mechanics
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required" # Blocks legacy IMDSv1 calls
+    http_put_response_hop_limit = 1
+  }
+
   network_interfaces {
     associate_public_ip_address = false # Strict zero-internet footprint inside the private tier
     security_groups             = [aws_security_group.app.id]
   }
 
-  # Automated Workstation Bootstrapping Script
+  # Automated Production Bootstrapping & Payload Injection Execution
   user_data = base64encode(<<-EOF
               #!/bin/bash
+              exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/null) 2>&1
+
               apt-get update -y
-              apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+              apt-get install -y apt-transport-https ca-certificates curl software-properties-common unzip
               curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
               add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu jammy stable"
               apt-get update -y
               apt-get install -y docker-ce docker-compose-plugin
               systemctl enable docker
               systemctl start docker
+
+              # Install AWS CLI v2
+              curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+              unzip awscliv2.zip
+              ./aws/install
+
+              # Establish runtime layout directories
+              mkdir -p /app
+              cd /app
+
+              # Download the pre-vetted compliance payloads from your ephemeral S3 asset bucket
+              aws s3 cp s3://${aws_s3_bucket.app_deploy.bucket}/app.jar .
+              aws s3 cp s3://${aws_s3_bucket.app_deploy.bucket}/Dockerfile .
+              aws s3 cp s3://${aws_s3_bucket.app_deploy.bucket}/docker-compose.yml .
+
+              # ==============================================================================
+              # CONFIGURATION BRIDGE: Dynamically write the cloud variables to a local .env
+              # ==============================================================================
+              echo "RDS_ENDPOINT=${aws_db_instance.postgres.address}" > /app/.env
+              echo "DB_USERNAME=${var.db_username}" >> /app/.env
+              echo "DB_PASSWORD=${random_password.db_password.result}" >> /app/.env
+
+              # Launch the optimized Spring Boot container runtime
+              docker compose up --build -d
               EOF
   )
 
