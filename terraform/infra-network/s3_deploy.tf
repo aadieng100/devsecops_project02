@@ -8,11 +8,42 @@ resource "aws_s3_bucket" "app_deploy" {
   tags          = { Name = "${var.project_name}-app-deploy-bucket" }
 }
 
+# FIX CKV_AWS_145: Enforce Default Server-Side Encryption using AWS Managed KMS Keys
 resource "aws_s3_bucket_server_side_encryption_configuration" "app_deploy_enc" {
   bucket = aws_s3_bucket.app_deploy.id
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "aws:kms"
+    }
+  }
+}
+
+# FIX CKV2_AWS_6: Enforce Strict Public Access Block boundaries on artifact storage
+resource "aws_s3_bucket_public_access_block" "app_deploy_privacy" {
+  bucket = aws_s3_bucket.app_deploy.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# FIX CKV2_AWS_61: Establish Data Lifecycle Expiration Mechanics
+resource "aws_s3_bucket_lifecycle_configuration" "app_deploy_lifecycle" {
+  bucket = aws_s3_bucket.app_deploy.id
+
+  rule {
+    id     = "AutoExpireArtifacts"
+    status = "Enabled"
+
+    filter {} # Targets all uploaded artifacts cleanly
+
+    expiration {
+      days = 1 # Ephemeral lifecycle: Purge payloads after 24 hours
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
     }
   }
 }
