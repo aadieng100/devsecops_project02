@@ -1,41 +1,17 @@
 version: '3.9'
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: ecommerce_postgres
-    environment:
-      POSTGRES_DB: ecommerce_db
-      POSTGRES_USER: ecommerce_user
-      POSTGRES_PASSWORD: ecommerce_pass
-    ports:
-      - "5432:5432"
-    volumes:
-      - ecommerce_pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ecommerce_user -d ecommerce_db"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
   api:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: ecommerce_api
     environment:
-      DB_URL: jdbc:postgresql://postgres:5432/ecommerce_db
-      DB_USERNAME: ecommerce_user
-      DB_PASSWORD: ecommerce_pass
+      # These variables will be dynamically injected via the local .env file on boot
+      DB_URL: jdbc:postgresql://${RDS_ENDPOINT}:5432/ecommerce_db
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
       SERVER_PORT: 8080
     ports:
       - "8080:8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
     restart: unless-stopped
-
-volumes:
-  ecommerce_pgdata:
-    driver: local

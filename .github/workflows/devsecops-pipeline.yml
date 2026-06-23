@@ -110,6 +110,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       dynamic_url: ${{ steps.process_outputs.outputs.alb_url }}
+      alb_arn: ${{ steps.process_outputs.outputs.alb_arn }}
+      tg_arn: ${{ steps.process_outputs.outputs.tg_arn }}
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
@@ -167,7 +169,12 @@ jobs:
         run: |
           cd terraform/infra-network
           LIVE_ALB_DNS=$(terraform output -raw alb_dns_name)
+          LIVE_ALB_ARN=$(terraform output -raw alb_arn)
+          LIVE_TG_ARN=$(terraform output -raw target_group_arn)
+
           echo "alb_url=http://$LIVE_ALB_DNS" >> $GITHUB_OUTPUT
+          echo "alb_arn=$LIVE_ALB_ARN" >> $GITHUB_OUTPUT
+          echo "tg_arn=$LIVE_TG_ARN" >> $GITHUB_OUTPUT
 
   # ==============================================================================
   # JOB 4: DAST PENETRATION FUZZING
@@ -179,20 +186,36 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
+      - name: Authenticate to AWS via OIDC for Real-Time Telemetry Audit
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: "arn:aws:iam::554000694003:role/devsecops-p02-github-actions-role"
+          aws-region: "eu-west-3"
+          audience: "sts.amazonaws.com"
+
+      # Real-Time Log Extraction Step
+      - name: Audit AWS Infrastructure State & Target Group Telemetry
+        run: |
+          echo "=== AUDITING AWS APPLICATION LOAD BALANCER STATUS ==="
+          aws elbv2 describe-load-balancers --load-balancer-arns "${{ needs.ephemeral-deploy.outputs.alb_arn }}" --query "LoadBalancers[0].State.Code" --output text
+
+          echo "=== AUDITING TARGET GROUP HEALTH DESCRIPTION ==="
+          aws elbv2 describe-target-health --target-group-arn "${{ needs.ephemeral-deploy.outputs.tg_arn }}"
+
       - name: Wait for Environment to Pass ALB Health Checks
         run: |
           TARGET_URL="${{ needs.ephemeral-deploy.outputs.dynamic_url }}"
           echo "Polling target environment: $TARGET_URL"
-          for i in {1..90}; do
+          for i in {1..30}; do # Dropped back to a sensible 5-minute threshold
             STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$TARGET_URL" || echo "000")
-            if [ "$STATUS_CODE" -eq 200 ] || [ "$STATUS_CODE" -eq 301 ] || [ "$STATUS_CODE" -eq 302 ] || [ "$STATUS_CODE" -eq 404 ]; then
+            if [ "$STATUS_CODE" -eq 200 ] || [ "$STATUS_CODE" -eq 404 ]; then
               echo "Environment is healthy! Received Status Code: $STATUS_CODE"
               exit 0
             fi
-            echo "Waiting for backend app initialization (Current Code: $STATUS_CODE)... Retrying in 10s [attempt $i/60]"
+            echo "Waiting for backend app initialization (Current Code: $STATUS_CODE)... Retrying in 10s [attempt $i/30]"
             sleep 10
           done
-          echo "Error: Target environment failed to stabilize within 15 minutes."
+          echo "Error: Target environment failed to stabilize within 5 minutes."
           exit 1
 
       - name: Remediate Workspace Permissions for Non-Root Docker Runners
