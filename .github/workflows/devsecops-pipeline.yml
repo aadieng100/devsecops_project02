@@ -29,6 +29,7 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 1. SECRET SCANNING
       - name: Run Trufflehog Secret Scan
         uses: trufflesecurity/trufflehog@main
         with:
@@ -36,20 +37,22 @@ jobs:
           head: ${{ github.event.pull_request.head.sha }}
           extra_args: --debug --only-verified
 
+      # 2. SAST (Semgrep)
       - name: Run Semgrep Code Analysis
         run: |
           docker run --rm -v "${{ github.workspace }}:/src" returntocorp/semgrep semgrep scan \
             --config=p/java --config=p/owasp-top-ten
-        continue-on-error: false # Flipped to false for enterprise hardening
+        continue-on-error: false
 
+      # 3. IaC ASSESSMENT (Checkov)
       - name: Run Checkov IaC Security Verification
         uses: bridgecrewio/checkov-action@master
         with:
           directory: terraform/infra-network
           framework: terraform
-          soft_fail: false # Enforce strict zero-vulnerabilities on your filtered baseline
-          # Professional Skip Matrix: Bypasses logging, deletion protection, and TLS parameters clashing with sandboxes
+          soft_fail: false
           skip_check: "CKV_AWS_150,CKV_AWS_293,CKV_AWS_2,CKV_AWS_103,CKV_AWS_378,CKV2_AWS_20,CKV_AWS_91,CKV_AWS_118,CKV_AWS_129,CKV_AWS_353,CKV2_AWS_60,CKV2_AWS_69,CKV_AWS_18,CKV_AWS_144,CKV_AWS_21,CKV2_AWS_62,CKV2_AWS_28,CKV_AWS_130,CKV_AWS_382,CKV_AWS_260,CKV_AWS_153,CKV_AWS_337,CKV_AWS_300"
+
   # ==============================================================================
   # JOB 2: COMPILATION & CONTAINER COMPLIANCE VETTING
   # ==============================================================================
@@ -69,6 +72,14 @@ jobs:
 
       - name: Execute Spring Boot Code Compilation
         run: mvn clean package -DskipTests=true
+
+      # ARTIFACT BRIDGE LAYER A: Persist the binary before the VM is destroyed
+      - name: Upload Compiled Application Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spring-compiled-jar
+          path: target/headless-ecommerce-api-1.0.0.jar
+          retention-days: 1 # Ephemeral lifecycle rule: Purge cache within 24 hours
 
       - name: Run Trivy Software Composition Analysis (SCA)
         uses: aquasecurity/trivy-action@master
@@ -92,7 +103,7 @@ jobs:
           exit-code: '1'
 
   # ==============================================================================
-  # JOB 3: EPHEMERAL INFRASTRUCTURE DEPLOYMENT (WITH TWO-PHASE PAYLOAD INJECTION)
+  # JOB 3: EPHEMERAL INFRASTRUCTURE DEPLOYMENT (WITH ARTIFACT INTEGRATION BRIDGE)
   # ==============================================================================
   ephemeral-deploy:
     needs: build-and-verify
@@ -102,6 +113,13 @@ jobs:
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
+
+      # ARTIFACT BRIDGE LAYER B: Pull down the binary onto this fresh host VM
+      - name: Download Compiled Application Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: spring-compiled-jar
+          path: target
 
       - name: Authenticate to AWS via OIDC Identity Provider
         uses: aws-actions/configure-aws-credentials@v4
@@ -123,13 +141,13 @@ jobs:
           terraform validate
           terraform plan -var="db_username=postgres"
 
-      # Phase 1: Target and create the storage bucket before the compute layer spins up
+      # Target and create the storage bucket before the compute layer spins up
       - name: Provision Ephemeral Storage Cell Baseline
         run: |
           cd terraform/infra-network
           terraform apply -target=aws_s3_bucket.app_deploy -auto-approve -var="db_username=postgres"
 
-      # Inject the pre-vetted application files directly into the newly provisioned bucket
+      # Securely stream the local files into the dynamic S3 storage bucket bucket
       - name: Stage Application Components to S3 Pipeline Storage
         run: |
           cd terraform/infra-network
@@ -138,7 +156,7 @@ jobs:
           aws s3 cp ../../Dockerfile s3://$BUCKET_NAME/Dockerfile
           aws s3 cp ../../docker-compose.yml s3://$BUCKET_NAME/docker-compose.yml
 
-      # Phase 2: Deploy the full network, target groups, auto-scaling tier, and ALB
+      # Deploy the full network, auto-scaling compute, and database infrastructure map
       - name: Complete Infrastructure Map Deployment
         run: |
           cd terraform/infra-network
@@ -152,7 +170,7 @@ jobs:
           echo "alb_url=http://$LIVE_ALB_DNS" >> $GITHUB_OUTPUT
 
   # ==============================================================================
-  # JOB 4: DAST PENETRATION FUZZING (WITH HEALTH CHECK POLLING LOOP)
+  # JOB 4: DAST PENETRATION FUZZING
   # ==============================================================================
   dast-penetration-test:
     needs: ephemeral-deploy
@@ -161,7 +179,6 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      # 502 Remediation Pass: Poll the ALB until the backend container returns a valid HTTP status
       - name: Wait for Environment to Pass ALB Health Checks
         run: |
           TARGET_URL="${{ needs.ephemeral-deploy.outputs.dynamic_url }}"
@@ -195,7 +212,7 @@ jobs:
   # ==============================================================================
   infrastructure-teardown:
     needs: [ephemeral-deploy, dast-penetration-test]
-    if: always() # Enforces cleanup even if any preceding step or job crashes
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
