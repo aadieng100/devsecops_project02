@@ -15,6 +15,13 @@ resource "aws_launch_template" "app_template" {
   image_id      = data.aws_ami.ubuntu.id
   instance_type = "t2.micro" # Free-tier constraint enforced for cost-mitigation
 
+  # FIX CKV_AWS_79: Enforce modern IMDSv2 token validation mechanics
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required" # Blocks legacy IMDSv1 calls
+    http_put_response_hop_limit = 1
+  }
+
   network_interfaces {
     associate_public_ip_address = false # Strict zero-internet footprint inside the private tier
     security_groups             = [aws_security_group.app.id]

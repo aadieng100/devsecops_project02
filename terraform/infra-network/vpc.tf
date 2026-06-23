@@ -9,6 +9,12 @@ resource "aws_vpc" "main" {
   }
 }
 
+# FIX CKV2_AWS_12: Adopt and completely isolate the default security group footprint
+resource "aws_default_security_group" "default" {
+  vpc_id = aws_vpc.main.id
+  # Leaving ingress and egress empty acts as a definitive drop-all firewall block
+}
+
 # 2. Internet Gateway for Public Ingress/Egress
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id

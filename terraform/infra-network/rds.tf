@@ -113,6 +113,9 @@ resource "aws_db_instance" "postgres" {
   storage_encrypted = true
   kms_key_id        = aws_kms_key.rds.arn
 
+  # FIX CKV_AWS_226: Enable automated compliance patch management
+  auto_minor_version_upgrade = true
+
   # Operational Safeguards & Costs Management
   backup_retention_period = 3 # Retain automated transaction logs for 72 hours
   deletion_protection     = false
