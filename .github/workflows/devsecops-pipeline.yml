@@ -1,5 +1,10 @@
 name: "DevSecOps: Ephemeral Parallel Validation Engine"
 
+# This pipeline is the required status check (secure-validation-gate) enforced by
+# main's branch-protection ruleset: every pull request must pass it end-to-end
+# — static scans, build/SCA, ephemeral AWS deploy, OWASP ZAP DAST, teardown —
+# before it can be merged into main.
+
 on:
   pull_request:
     branches: [ "main" ]
