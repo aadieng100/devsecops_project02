@@ -133,8 +133,8 @@ The pipeline solves a non-trivial distribution problem: GitHub Actions runner no
 ### Phase 1 — Storage Provisioning
 
 Terraform targets only the S3 deployment bucket (`module.compute.aws_s3_bucket.app_deploy` in `terraform/environments/staging`):
-- Server-side encryption enabled (AES-256)
-- Public access blocked
+- Server-side encryption enabled (`aws:kms`)
+- Public access fully blocked
 - 24-hour lifecycle expiry rule (ephemeral data hygiene)
 
 The runner then streams three artifacts into the bucket:
@@ -157,16 +157,17 @@ AWS ALB (Public Subnets, HTTP:80)
    ▼
 EC2 Auto Scaling Group (Private Subnets)
    │ user_data bootstrap script:
-   │  1. Pull app.jar + Dockerfile from S3
-   │  2. Resolve RDS endpoint via IAM metadata
-   │  3. Write /app/.env with live credentials
-   │  4. docker compose up
+   │  1. Pull app.jar + Dockerfile + docker-compose.yml from S3 (via IAM profile)
+   │  2. Write /app/.env from Terraform-injected RDS coordinates
+   │  3. docker compose up
    │
    ▼
 AWS RDS PostgreSQL 16 (Isolated Subnet Group)
 ```
 
-The `user_data` bootstrap script uses the EC2 instance's IAM profile to fetch runtime credentials from Secrets Manager and write a local `.env` file dynamically — no static credentials in source control, ever.
+The database password is **generated at apply time** by Terraform (`random_password`), published to **SSM Parameter Store** as a KMS-encrypted `SecureString`, and injected into the launch template so the boot script can write it into `/app/.env` — no static credentials in source control, ever. The instance's IAM profile is scoped to **read-only** access on the artifact bucket only.
+
+> **Credential-safe by construction.** The `.env` is written with single-quoted shell echoes and the generated password excludes `$` and other shell/Compose metacharacters, so the secret survives the shell → `.env` → Docker Compose round-trip intact instead of being silently mangled at boot.
 
 > **Why decouple the database?** Running PostgreSQL alongside the Java application inside a `t3.micro` (1 GB RAM) instance triggers the Linux OOM killer. Routing connections to managed RDS keeps the compute layer stateless and horizontally scalable.
 
