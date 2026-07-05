@@ -6,7 +6,8 @@ on:
     paths:
       - "src/**"
       - "pom.xml"
-      - "terraform/infra-network/**"
+      - "terraform/modules/**"
+      - "terraform/environments/**"
       - ".github/workflows/**"
       - ".semgrepignore"
       - ".zap/**"
@@ -48,10 +49,16 @@ jobs:
       - name: Run Checkov IaC Security Verification
         uses: bridgecrewio/checkov-action@master
         with:
-          directory: terraform/infra-network
+          directory: terraform/environments/staging
           framework: terraform
+          download_external_modules: false
           soft_fail: false
-          skip_check: "CKV_AWS_150,CKV_AWS_293,CKV_AWS_2,CKV_AWS_103,CKV_AWS_378,CKV2_AWS_20,CKV_AWS_91,CKV_AWS_118,CKV_AWS_129,CKV_AWS_353,CKV2_AWS_60,CKV2_AWS_69,CKV_AWS_18,CKV_AWS_144,CKV_AWS_21,CKV2_AWS_62,CKV2_AWS_28,CKV_AWS_130,CKV_AWS_382,CKV_AWS_260,CKV_AWS_153,CKV_AWS_337,CKV_AWS_300"
+          # CKV2_AWS_5 / CKV2_AWS_11: cross-module graph false positives since the
+          # pattern-library split — the SGs ARE attached (compute module: ALB +
+          # launch template via var.*_security_group_id) and flow logging IS enabled
+          # (observability module via var.vpc_id), but Checkov's graph does not
+          # resolve edges across module input variables.
+          skip_check: "CKV_AWS_150,CKV_AWS_293,CKV_AWS_2,CKV_AWS_103,CKV_AWS_378,CKV2_AWS_20,CKV_AWS_91,CKV_AWS_118,CKV_AWS_129,CKV_AWS_353,CKV2_AWS_60,CKV2_AWS_69,CKV_AWS_18,CKV_AWS_144,CKV_AWS_21,CKV2_AWS_62,CKV2_AWS_28,CKV_AWS_130,CKV_AWS_382,CKV_AWS_260,CKV_AWS_153,CKV_AWS_337,CKV_AWS_300,CKV2_AWS_5,CKV2_AWS_11"
 
   # ==============================================================================
   # JOB 2: COMPILATION & CONTAINER COMPLIANCE VETTING
@@ -137,7 +144,7 @@ jobs:
 
       - name: Execute IaC Verification Checks
         run: |
-          cd terraform/infra-network
+          cd terraform/environments/staging
           terraform init -reconfigure -backend-config="key=ephemeral/terraform.tfstate"
           terraform fmt -check
           terraform validate
@@ -146,15 +153,15 @@ jobs:
       # Target and create the storage bucket before the compute layer spins up
       - name: Provision Ephemeral Storage Cell Baseline
         run: |
-          cd terraform/infra-network
-          terraform apply -target=aws_s3_bucket.app_deploy -auto-approve -var="db_username=postgres"
+          cd terraform/environments/staging
+          terraform apply -target=module.compute.aws_s3_bucket.app_deploy -auto-approve -var="db_username=postgres"
 
       # Securely stream the local files into the dynamic S3 storage bucket bucket
       - name: Stage Application Components to S3 Pipeline Storage
         run: |
-          cd terraform/infra-network
+          cd terraform/environments/staging
           BUCKET_NAME=$(terraform output -raw app_deploy_bucket_name)
-          aws s3 cp ../../target/headless-ecommerce-api-1.0.0.jar s3://$BUCKET_NAME/app.jar
+          aws s3 cp ../../../target/headless-ecommerce-api-1.0.0.jar s3://$BUCKET_NAME/app.jar
 
           # Generate a staging-optimized Dockerfile that uses the pre-compiled JAR
           # The dev Dockerfile rebuilds from source (pom.xml + src/) which don't exist on EC2
@@ -170,18 +177,18 @@ jobs:
             > /tmp/Dockerfile.staging
           aws s3 cp /tmp/Dockerfile.staging s3://$BUCKET_NAME/Dockerfile
 
-          aws s3 cp ../../docker-compose.yml s3://$BUCKET_NAME/docker-compose.yml
+          aws s3 cp ../../../docker-compose.yml s3://$BUCKET_NAME/docker-compose.yml
 
       # Deploy the full network, auto-scaling compute, and database infrastructure map
       - name: Complete Infrastructure Map Deployment
         run: |
-          cd terraform/infra-network
+          cd terraform/environments/staging
           terraform apply -auto-approve -var="db_username=postgres"
 
       - name: Process and Export Network Targets
         id: process_outputs
         run: |
-          cd terraform/infra-network
+          cd terraform/environments/staging
           LIVE_ALB_DNS=$(terraform output -raw alb_dns_name)
           LIVE_ALB_ARN=$(terraform output -raw alb_arn)
           LIVE_TG_ARN=$(terraform output -raw target_group_arn)
@@ -333,7 +340,7 @@ jobs:
 
       - name: Enforce Ephemeral Infrastructure Destruction
         run: |
-          cd terraform/infra-network
+          cd terraform/environments/staging
           terraform init -reconfigure -backend-config="key=ephemeral/terraform.tfstate"
           terraform destroy -auto-approve -var="db_username=postgres"
 

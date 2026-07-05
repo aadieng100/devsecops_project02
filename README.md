@@ -21,10 +21,12 @@
 - [Overview](#overview)
 - [DevSecOps Pipeline Architecture](#devsecops-pipeline-architecture)
 - [Two-Phase Ephemeral Infrastructure](#two-phase-ephemeral-infrastructure)
+- [Infrastructure Pattern Library](#infrastructure-pattern-library)
 - [Security Hardening](#security-hardening)
 - [Domain Data Model](#domain-data-model)
 - [API Reference](#api-reference)
 - [Project Structure](#project-structure)
+- [Documentation](#documentation)
 - [Local Development](#local-development)
 
 ---
@@ -114,7 +116,7 @@ Pull requests trigger a fully parallelized **Directed Acyclic Graph (DAG)** work
 
 | Tool | Purpose | Failure Behavior |
 |---|---|---|
-| **Maven** | Compiles with pinned `tomcat.version: 10.1.55` and `postgresql.version: 42.7.11` to block transitive RCE vulnerabilities | Hard fail |
+| **Maven** | Compiles with pinned `tomcat.version: 10.1.55`, `postgresql.version: 42.7.11` and `jackson-bom.version: 2.21.4` to block transitive RCE vulnerabilities | Hard fail |
 | **Trivy FS** | SCA scan of all file system dependencies — zero tolerance for `CRITICAL`/`HIGH` CVEs | Hard fail |
 | **Trivy Image** | Container layer analysis on `eclipse-temurin:17-jre-alpine` | Hard fail |
 
@@ -130,9 +132,9 @@ The pipeline solves a non-trivial distribution problem: GitHub Actions runner no
 
 ### Phase 1 — Storage Provisioning
 
-Terraform targets only the S3 deployment bucket (`aws_s3_bucket.app_deploy`):
-- Server-side encryption enabled (AES-256)
-- Public access blocked
+Terraform targets only the S3 deployment bucket (`module.compute.aws_s3_bucket.app_deploy` in `terraform/environments/staging`):
+- Server-side encryption enabled (`aws:kms`)
+- Public access fully blocked
 - 24-hour lifecycle expiry rule (ephemeral data hygiene)
 
 The runner then streams three artifacts into the bucket:
@@ -155,18 +157,54 @@ AWS ALB (Public Subnets, HTTP:80)
    ▼
 EC2 Auto Scaling Group (Private Subnets)
    │ user_data bootstrap script:
-   │  1. Pull app.jar + Dockerfile from S3
-   │  2. Resolve RDS endpoint via IAM metadata
-   │  3. Write /app/.env with live credentials
-   │  4. docker compose up
+   │  1. Pull app.jar + Dockerfile + docker-compose.yml from S3 (via IAM profile)
+   │  2. Write /app/.env from Terraform-injected RDS coordinates
+   │  3. docker compose up
    │
    ▼
 AWS RDS PostgreSQL 16 (Isolated Subnet Group)
 ```
 
-The `user_data` bootstrap script uses the EC2 instance's IAM profile to fetch runtime credentials from Secrets Manager and write a local `.env` file dynamically — no static credentials in source control, ever.
+The database password is **generated at apply time** by Terraform (`random_password`), published to **SSM Parameter Store** as a KMS-encrypted `SecureString`, and injected into the launch template so the boot script can write it into `/app/.env` — no static credentials in source control, ever. The instance's IAM profile is scoped to **read-only** access on the artifact bucket only.
+
+> **Credential-safe by construction.** The `.env` is written with single-quoted shell echoes and the generated password excludes `$` and other shell/Compose metacharacters, so the secret survives the shell → `.env` → Docker Compose round-trip intact instead of being silently mangled at boot.
 
 > **Why decouple the database?** Running PostgreSQL alongside the Java application inside a `t3.micro` (1 GB RAM) instance triggers the Linux OOM killer. Routing connections to managed RDS keeps the compute layer stateless and horizontally scalable.
+
+---
+
+## Infrastructure Pattern Library
+
+The Terraform footprint is a **reusable module library**, not a monolith. Small,
+single-responsibility, security-hardened modules are composed by thin per-environment
+roots — each with its own remote state. Adding an environment is configuration, not
+code duplication.
+
+```
+terraform/
+├── bootstrap/              # One-time backend: state bucket, KMS, GitHub OIDC role
+├── modules/               # Reusable building blocks (the pattern library)
+│   ├── network/           # VPC · 3 subnet tiers · routing · NAT · edge SGs
+│   ├── iam/               # EC2 instance role + profile (least-privilege S3 read)
+│   ├── database/          # Encrypted Multi-AZ RDS PostgreSQL 16 + generated secret
+│   ├── compute/           # ALB · Auto Scaling Group · ephemeral artifact bucket
+│   └── observability/     # VPC flow logs → locked-down, self-expiring S3
+└── environments/          # Composition roots (one state file each)
+    ├── staging/           # Production-representative; deployed by the pipeline
+    └── dev/               # Low-cost sandbox twin (single-AZ, no ASG burst)
+```
+
+| Principle | How it shows up |
+|---|---|
+| **Single responsibility** | One concern per module; clean input/output contracts |
+| **No provider/backend in modules** | Environments own state + provider; modules own resources |
+| **DRY environments** | `dev` and `staging` share every module; differ only in `tfvars` |
+| **Cycle-free wiring** | `iam` ⇄ `compute` decoupled via a shared bucket **name** string |
+| **Namespaced by `project_name`** | `dev` and `staging` coexist in one account without collisions |
+| **Compliance built in** | Each module ships its own Checkov fixes (IMDSv2, KMS, PAB, …) |
+
+Full catalog, dependency graph, and how-to (new module / new environment):
+[`docs/terraform-module-usage.md`](docs/terraform-module-usage.md).
 
 ---
 
@@ -396,12 +434,23 @@ devsecops_project02/
 ├── .zap/
 │   └── rules.tsv                    # OWASP ZAP custom rule overrides
 │
-├── terraform/infra-network/         # Full AWS multi-tier IaC footprint
-│   ├── vpc.tf                       # VPC, subnets, IGW, NAT Gateway
-│   ├── alb.tf                       # Application Load Balancer
-│   ├── asg.tf                       # Auto Scaling Group + Launch Template
-│   ├── rds.tf                       # RDS PostgreSQL 16 cluster
-│   └── providers.tf                 # AWS provider + S3 backend config
+├── docs/                            # Self-service, ops & IaC documentation
+│   ├── developer-self-service-guide.md
+│   ├── runbook.md
+│   ├── troubleshooting.md
+│   └── terraform-module-usage.md
+│
+├── terraform/                        # IaC pattern library (modules + environments)
+│   ├── bootstrap/                   # One-time backend: state bucket, KMS, OIDC role
+│   ├── modules/                     # Reusable, single-responsibility building blocks
+│   │   ├── network/                 # VPC, subnets, routing, NAT, edge security groups
+│   │   ├── iam/                     # EC2 instance role + profile (least-privilege S3)
+│   │   ├── database/                # Encrypted Multi-AZ RDS PostgreSQL + secret
+│   │   ├── compute/                 # ALB + Auto Scaling Group + artifact bucket
+│   │   └── observability/           # VPC flow logs → locked-down S3
+│   └── environments/                # Composition roots (one state file each)
+│       ├── staging/                 # Production-representative; deployed by CI
+│       └── dev/                     # Low-cost sandbox twin
 │
 ├── Dockerfile                       # Multi-stage container build (local)
 ├── docker-compose.yml               # Local development stack
@@ -430,6 +479,19 @@ devsecops_project02/
     └── resources/
         └── application.properties           # Hardened production configuration
 ```
+
+---
+
+## Documentation
+
+Operational and self-service documentation lives in [`docs/`](docs/):
+
+| Guide | For | Covers |
+|---|---|---|
+| [Developer Self-Service](docs/developer-self-service-guide.md) | Any developer | Local loop, standing up your own `dev` sandbox, the paved road to staging, changing infra safely |
+| [Terraform Module Usage](docs/terraform-module-usage.md) | Anyone touching IaC | Module catalog, dependency graph, adding a new module/environment |
+| [Runbook](docs/runbook.md) | On-call / operators | Deploy, promote, roll back, tear down, secret rotation, on-call triage |
+| [Troubleshooting](docs/troubleshooting.md) | Everyone | Symptom → cause → fix across IaC, runtime, and pipeline gates |
 
 ---
 

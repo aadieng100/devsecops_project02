@@ -22,6 +22,10 @@
         <java.version>17</java.version>
         <tomcat.version>10.1.55</tomcat.version>
         <postgresql.version>42.7.11</postgresql.version>
+        <!-- Pin Jackson BOM above the Spring Boot managed 2.21.2 to remediate
+             CVE-2026-54512 / CVE-2026-54513 (jackson-databind RCE via
+             PolymorphicTypeValidator bypass) — fixed in 2.21.4 -->
+        <jackson-bom.version>2.21.4</jackson-bom.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     </properties>

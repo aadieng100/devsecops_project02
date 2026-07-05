@@ -13,10 +13,10 @@ terraform {
 
   backend "s3" {
     bucket       = "devsecops-p02-remote-state-storage-99"
-    key          = "staging/terraform.tfstate" # Isolated state key for the application runtime layer
+    key          = "dev/terraform.tfstate"
     region       = "eu-west-3"
     encrypt      = true
-    use_lockfile = true # Leveraging our zero-cost native S3 locking engine
+    use_lockfile = true
   }
 }
 
@@ -26,7 +26,7 @@ provider "aws" {
   default_tags {
     tags = {
       Project     = "DevSecOps-Project02"
-      Environment = "Staging"
+      Environment = "Dev"
       ManagedBy   = "Terraform"
     }
   }
