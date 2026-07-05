@@ -1,16 +1,14 @@
-# ==============================================================================
-# 1. CRYPTOGRAPHIC BOUNDARY (Dedicated KMS CMK for Storage Encryption at Rest)
-# ==============================================================================
-
-# Dynamic lookup to retrieve your current AWS Account ID for the KMS policy
 data "aws_caller_identity" "current" {}
 
+# ==============================================================================
+# CRYPTOGRAPHIC BOUNDARY (dedicated KMS CMK for storage encryption at rest)
+# ==============================================================================
 resource "aws_kms_key" "rds" {
   description             = "KMS Customer Managed Key for explicit RDS storage volume encryption"
-  deletion_window_in_days = 7 # Cost mitigation constraint for sandbox lifecycle
+  deletion_window_in_days = var.kms_deletion_window_in_days
   enable_key_rotation     = true
 
-  # FIX CKV2_AWS_64: Define an explicit KMS Key Policy allowing account root administration
+  # CKV2_AWS_64: explicit key policy allowing account root administration.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -35,43 +33,41 @@ resource "aws_kms_alias" "rds" {
 }
 
 # ==============================================================================
-# NEW: PROGRAMMATIC SECRET ENGINE (Zero plaintext credentials in code)
+# PROGRAMMATIC SECRET ENGINE (zero plaintext credentials in code)
 # ==============================================================================
 resource "random_password" "db_password" {
   length           = 24
   special          = true
-  override_special = "!#$%&*()-_=+[]{}<>:?" # Removes characters that cause parsing breaks in database URI strings
+  override_special = "!#$%&*()-_=+[]{}<>:?" # Excludes chars that break DB URI parsing
 }
 
 # ==============================================================================
-# 2. SUBNET ISOLATION (Binds the database strictly to isolated DB subnets)
+# SUBNET ISOLATION
 # ==============================================================================
 resource "aws_db_subnet_group" "db_group" {
   name        = "${var.project_name}-db-subnet-group"
-  description = "Restricts database placement exclusively to isolated multi-AZ database subnets"
-  subnet_ids  = aws_subnet.database[*].id
+  description = "Restricts database placement to isolated multi-AZ database subnets"
+  subnet_ids  = var.database_subnet_ids
 
   tags = { Name = "${var.project_name}-db-subnet-group" }
 }
 
 # ==============================================================================
-# 3. NETWORK FIREWALL GATE (Strict Security Group Enforcing Zero Inbound Public Access)
+# NETWORK FIREWALL GATE (zero inbound public access; app tier only)
 # ==============================================================================
 resource "aws_security_group" "db" {
   name        = "${var.project_name}-db-sg"
-  description = "Isolates the database cluster, blocking all traffic except from the app compute tier"
-  vpc_id      = aws_vpc.main.id
+  description = "Isolates the database, blocking all traffic except from the app compute tier"
+  vpc_id      = var.vpc_id
 
-  # Strict Ingress: Only traffic originating from the backend compute security group on port 5432
   ingress {
     description     = "Allow stateful database queries exclusively from backend compute instances"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [aws_security_group.app.id] # Tight coupling to Phase 4 Compute SG
+    security_groups = [var.app_security_group_id]
   }
 
-  # Total outbound isolation - database instances do not initiate external connections
   egress {
     description = "Allow responses back out to authorized connections"
     from_port   = 0
@@ -84,12 +80,12 @@ resource "aws_security_group" "db" {
 }
 
 # ==============================================================================
-# 4. ENGINE OPTIMIZATION (Custom Parameter Group for PostgreSQL 16)
+# ENGINE OPTIMIZATION (custom parameter group)
 # ==============================================================================
 resource "aws_db_parameter_group" "postgres_pg" {
-  name        = "${var.project_name}-pg16-params"
-  family      = "postgres16"
-  description = "Custom runtime optimization parameters for PostgreSQL 16"
+  name        = "${var.project_name}-pg-params"
+  family      = var.parameter_group_family
+  description = "Custom runtime optimization parameters for PostgreSQL"
 
   parameter {
     name  = "log_connections"
@@ -103,59 +99,52 @@ resource "aws_db_parameter_group" "postgres_pg" {
 
   parameter {
     name  = "log_min_duration_statement"
-    value = "1000" # Log any queries taking longer than 1 second for DevSecOps analysis
+    value = "1000" # Log queries slower than 1s for DevSecOps analysis
   }
 
-  tags = { Name = "${var.project_name}-postgres16-parameter-group" }
+  tags = { Name = "${var.project_name}-postgres-parameter-group" }
 }
 
 # ==============================================================================
-# 5. CORE HIGH-AVAILABILITY CLUSTER ENGINE (Multi-AZ Encrypted RDS Instance)
+# CORE RDS CLUSTER ENGINE
 # ==============================================================================
 resource "aws_db_instance" "postgres" {
   identifier             = "${var.project_name}-database"
   engine                 = "postgres"
-  engine_version         = "16"           # Structured to align with Spring Boot 3 properties
-  instance_class         = "db.t3.micro"  # Free-tier/Low-cost bracket alignment
-  allocated_storage      = 20             # Baseline corporate database storage
-  storage_type           = "gp3"          # Modern, performant SSD architecture
-  db_name                = "ecommerce_db" # Matches Spring Boot data-seeding routing properties
+  engine_version         = var.engine_version
+  instance_class         = var.instance_class
+  allocated_storage      = var.allocated_storage
+  storage_type           = "gp3"
+  db_name                = var.db_name
   username               = var.db_username
   password               = random_password.db_password.result
   db_subnet_group_name   = aws_db_subnet_group.db_group.name
   vpc_security_group_ids = [aws_security_group.db.id]
   parameter_group_name   = aws_db_parameter_group.postgres_pg.name
 
-  # High Availability & Resilience Configuration
-  multi_az = true # Provisions synchronous failover standbys across Availability Zones
+  multi_az = var.multi_az
 
-  # Cryptographic Data Protection
   storage_encrypted = true
   kms_key_id        = aws_kms_key.rds.arn
 
-  # FIX CKV_AWS_226: Enable automated compliance patch management
+  # CKV_AWS_226: automated compliance patch management.
   auto_minor_version_upgrade = true
-
-  # FIX CKV_AWS_161: Enable IAM Database Authentication
+  # CKV_AWS_161: IAM database authentication.
   iam_database_authentication_enabled = true
 
-  # Operational Safeguards & Costs Management
-  backup_retention_period = 3 # Retain automated transaction logs for 72 hours
-  deletion_protection     = false
-  skip_final_snapshot     = true # Allows cost-free clean teardowns at project termination
+  backup_retention_period = var.backup_retention_period
+  deletion_protection     = var.deletion_protection
+  skip_final_snapshot     = true
 
   tags = { Name = "${var.project_name}-postgres-cluster" }
 }
 
-# Publish the cryptographically generated password straight to AWS Systems Manager Parameter Store
+# Publish the generated password to SSM Parameter Store (KMS-encrypted at rest).
 resource "aws_ssm_parameter" "db_password" {
-  name        = "/config/ecommerce-api/spring.datasource.password"
+  name        = var.ssm_password_parameter_name
   description = "Dynamic runtime database password for the headless Spring Boot application"
-  type        = "SecureString" # Enforces KMS encryption at rest within the parameter network
+  type        = "SecureString"
   value       = random_password.db_password.result
 
-  tags = {
-    Environment = "Staging"
-    ManagedBy   = "Terraform"
-  }
+  tags = { ManagedBy = "Terraform" }
 }
