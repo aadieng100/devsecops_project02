@@ -36,9 +36,14 @@ resource "aws_kms_alias" "rds" {
 # PROGRAMMATIC SECRET ENGINE (zero plaintext credentials in code)
 # ==============================================================================
 resource "random_password" "db_password" {
-  length           = 24
-  special          = true
-  override_special = "!#$%&*()-_=+[]{}<>:?" # Excludes chars that break DB URI parsing
+  length  = 24
+  special = true
+  # Excludes chars that break DB URI parsing, PLUS `$`: the compute bootstrap
+  # writes the password into /app/.env via a double-quoted shell echo and Docker
+  # Compose interpolates `$` in .env values — a `$` in the password gets expanded
+  # at both layers, mangling the credential and crashing the app on boot (~25%
+  # of runs, since random_password rolls it in 24 chars).
+  override_special = "!#%&*()-_=+[]{}<>:?"
 }
 
 # ==============================================================================

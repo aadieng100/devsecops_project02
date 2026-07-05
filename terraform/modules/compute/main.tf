@@ -161,10 +161,12 @@ resource "aws_launch_template" "app_template" {
 
               # ==============================================================================
               # CONFIGURATION BRIDGE: write cloud variables to a local .env
+              # Single quotes: Terraform interpolates before bash runs, so the shell
+              # must NOT expand anything inside the substituted values ($, {}, etc.).
               # ==============================================================================
-              echo "RDS_ENDPOINT=${var.db_address}" > /app/.env
-              echo "DB_USERNAME=${var.db_username}" >> /app/.env
-              echo "DB_PASSWORD=${var.db_password}" >> /app/.env
+              echo 'RDS_ENDPOINT=${var.db_address}' > /app/.env
+              echo 'DB_USERNAME=${var.db_username}' >> /app/.env
+              echo 'DB_PASSWORD=${var.db_password}' >> /app/.env
 
               # Launch the Spring Boot container runtime
               docker compose up --build -d
