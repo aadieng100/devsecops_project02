@@ -116,7 +116,7 @@ Pull requests trigger a fully parallelized **Directed Acyclic Graph (DAG)** work
 
 | Tool | Purpose | Failure Behavior |
 |---|---|---|
-| **Maven** | Compiles with pinned `tomcat.version: 10.1.55` and `postgresql.version: 42.7.11` to block transitive RCE vulnerabilities | Hard fail |
+| **Maven** | Compiles with pinned `tomcat.version: 10.1.55`, `postgresql.version: 42.7.11` and `jackson-bom.version: 2.21.4` to block transitive RCE vulnerabilities | Hard fail |
 | **Trivy FS** | SCA scan of all file system dependencies — zero tolerance for `CRITICAL`/`HIGH` CVEs | Hard fail |
 | **Trivy Image** | Container layer analysis on `eclipse-temurin:17-jre-alpine` | Hard fail |
 
