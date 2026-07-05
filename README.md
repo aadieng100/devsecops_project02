@@ -35,7 +35,7 @@
 
 This project is a **REST API backend for a headless e-commerce platform**, designed as a full DevSecOps reference implementation. Security is treated as a first-class citizen — not a post-deployment afterthought.
 
-Every pull request into `main` triggers a fully automated **6-job DAG validation pipeline** that runs secret scanning, SAST analysis, infrastructure compliance checks, SCA/container hardening, ephemeral AWS deployment, active DAST fuzzing, guaranteed teardown, and a final branch-protection gate — all before a single line of code can be merged.
+Every pull request into `main` triggers a fully automated **6-job DAG validation pipeline** that runs secret scanning, SAST analysis, infrastructure compliance checks, SCA/container hardening, ephemeral AWS deployment, OWASP ZAP DAST validation, guaranteed teardown, and a final branch-protection gate — all before a single line of code can be merged.
 
 ### Tech Stack
 
@@ -88,7 +88,7 @@ Pull requests trigger a fully parallelized **Directed Acyclic Graph (DAG)** work
                  │ needs: ephemeral-deploy
                  ▼
  ┌─────────────────────────────────┐
- │  JOB 4 — Active DAST            │
+ │  JOB 4 — OWASP ZAP DAST         │
  │                                 │
  │  ● ALB health-check polling     │
  │  ● OWASP ZAP baseline scan      │
@@ -264,7 +264,7 @@ A `@RestControllerAdvice` handler produces consistent, OWASP-compliant error pay
 
 ### 5. OWASP ZAP DAST Scan Results
 
-Active DAST scan results after hardening (production target):
+OWASP ZAP baseline scan results after hardening (production target):
 
 ```
 PASS: Loosely Scoped Cookie          [90033]
