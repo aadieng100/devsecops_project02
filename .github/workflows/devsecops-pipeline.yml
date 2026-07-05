@@ -53,7 +53,12 @@ jobs:
           framework: terraform
           download_external_modules: false
           soft_fail: false
-          skip_check: "CKV_AWS_150,CKV_AWS_293,CKV_AWS_2,CKV_AWS_103,CKV_AWS_378,CKV2_AWS_20,CKV_AWS_91,CKV_AWS_118,CKV_AWS_129,CKV_AWS_353,CKV2_AWS_60,CKV2_AWS_69,CKV_AWS_18,CKV_AWS_144,CKV_AWS_21,CKV2_AWS_62,CKV2_AWS_28,CKV_AWS_130,CKV_AWS_382,CKV_AWS_260,CKV_AWS_153,CKV_AWS_337,CKV_AWS_300"
+          # CKV2_AWS_5 / CKV2_AWS_11: cross-module graph false positives since the
+          # pattern-library split — the SGs ARE attached (compute module: ALB +
+          # launch template via var.*_security_group_id) and flow logging IS enabled
+          # (observability module via var.vpc_id), but Checkov's graph does not
+          # resolve edges across module input variables.
+          skip_check: "CKV_AWS_150,CKV_AWS_293,CKV_AWS_2,CKV_AWS_103,CKV_AWS_378,CKV2_AWS_20,CKV_AWS_91,CKV_AWS_118,CKV_AWS_129,CKV_AWS_353,CKV2_AWS_60,CKV2_AWS_69,CKV_AWS_18,CKV_AWS_144,CKV_AWS_21,CKV2_AWS_62,CKV2_AWS_28,CKV_AWS_130,CKV_AWS_382,CKV_AWS_260,CKV_AWS_153,CKV_AWS_337,CKV_AWS_300,CKV2_AWS_5,CKV2_AWS_11"
 
   # ==============================================================================
   # JOB 2: COMPILATION & CONTAINER COMPLIANCE VETTING

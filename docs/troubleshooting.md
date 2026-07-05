@@ -101,6 +101,18 @@ Points at `terraform/environments/staging` and resolves local modules.
   in [the workflow](../.github/workflows/devsecops-pipeline.yml) with a comment.
 - Reproduce locally: `checkov -d terraform/environments/staging --framework terraform`.
 
+**Known cross-module false positives.** Checkov's graph checks do not resolve
+edges that cross module boundaries via input variables. Two are permanently
+skipped with justification:
+
+| Check | Claims | Reality |
+|---|---|---|
+| `CKV2_AWS_5` (SG not attached) | `network`'s ALB/app SGs are unattached | They're attached in `compute` (`aws_lb.security_groups`, launch template) via `var.*_security_group_id` |
+| `CKV2_AWS_11` (no VPC flow logs) | `network`'s VPC has no flow log | `observability` creates one, wired via `var.vpc_id` |
+
+If you split more cross-referencing resources into separate modules, expect the
+same class of finding — verify the wiring is real, then skip with a comment.
+
 ### Semgrep (SAST)
 Fails on `p/java` or `p/owasp-top-ten`. Fix the flagged code; only add to
 `.semgrepignore` for a justified false positive.
