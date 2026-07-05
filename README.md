@@ -35,7 +35,7 @@
 
 This project is a **REST API backend for a headless e-commerce platform**, designed as a full DevSecOps reference implementation. Security is treated as a first-class citizen — not a post-deployment afterthought.
 
-Every pull request into `main` triggers a fully automated **5-job security validation pipeline** that runs secret scanning, SAST analysis, infrastructure compliance checks, SCA/container hardening, and active DAST fuzzing against an ephemeral multi-tier AWS environment — all before a single line of code can be merged.
+Every pull request into `main` triggers a fully automated **6-job DAG validation pipeline** that runs secret scanning, SAST analysis, infrastructure compliance checks, SCA/container hardening, ephemeral AWS deployment, active DAST fuzzing, guaranteed teardown, and a final branch-protection gate — all before a single line of code can be merged.
 
 ### Tech Stack
 
