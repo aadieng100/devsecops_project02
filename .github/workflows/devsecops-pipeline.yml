@@ -161,7 +161,7 @@ jobs:
         run: |
           cd terraform/environments/staging
           BUCKET_NAME=$(terraform output -raw app_deploy_bucket_name)
-          aws s3 cp ../../target/headless-ecommerce-api-1.0.0.jar s3://$BUCKET_NAME/app.jar
+          aws s3 cp ../../../target/headless-ecommerce-api-1.0.0.jar s3://$BUCKET_NAME/app.jar
 
           # Generate a staging-optimized Dockerfile that uses the pre-compiled JAR
           # The dev Dockerfile rebuilds from source (pom.xml + src/) which don't exist on EC2
@@ -177,7 +177,7 @@ jobs:
             > /tmp/Dockerfile.staging
           aws s3 cp /tmp/Dockerfile.staging s3://$BUCKET_NAME/Dockerfile
 
-          aws s3 cp ../../docker-compose.yml s3://$BUCKET_NAME/docker-compose.yml
+          aws s3 cp ../../../docker-compose.yml s3://$BUCKET_NAME/docker-compose.yml
 
       # Deploy the full network, auto-scaling compute, and database infrastructure map
       - name: Complete Infrastructure Map Deployment

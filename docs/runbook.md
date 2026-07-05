@@ -50,9 +50,10 @@ terraform apply -target=module.compute.aws_s3_bucket.app_deploy \
 
 # Stage artifacts
 BUCKET=$(terraform output -raw app_deploy_bucket_name)
-aws s3 cp target/headless-ecommerce-api-1.0.0.jar s3://$BUCKET/app.jar
-aws s3 cp <staging Dockerfile>                     s3://$BUCKET/Dockerfile
-aws s3 cp docker-compose.yml                        s3://$BUCKET/docker-compose.yml
+# Paths are relative to terraform/environments/staging (3 levels below repo root)
+aws s3 cp ../../../target/headless-ecommerce-api-1.0.0.jar s3://$BUCKET/app.jar
+aws s3 cp <staging Dockerfile>                              s3://$BUCKET/Dockerfile
+aws s3 cp ../../../docker-compose.yml                       s3://$BUCKET/docker-compose.yml
 
 # Phase 2 — apply the full stack; instances pull artifacts on boot
 terraform apply -auto-approve -var="db_username=postgres"
