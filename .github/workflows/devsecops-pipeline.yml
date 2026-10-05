@@ -17,6 +17,7 @@ on:
       - ".semgrepignore"
       - ".zap/**"
       - "Dockerfile"
+      - "LICENSE"
 
 permissions:
   id-token: write   # Required for keyless AWS OIDC Federation
